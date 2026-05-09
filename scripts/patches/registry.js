@@ -20,6 +20,7 @@ const {
   applyLinuxAvatarOverlayMousePassthroughPatch,
   applyBrowserUseNodeReplApprovalPatch,
   applyLinuxExplicitIpcQuitPatch,
+  applyLinuxExplicitQuitPromptBypassPatch,
   applyLinuxExplicitTrayQuitPatch,
   applyLinuxFileManagerPatch,
   applyLinuxGitOriginsSourceFallbackPatch,
@@ -69,6 +70,11 @@ const MAIN_BUNDLE_PATCHES = [
     name: "linux-quit-guard",
     ciPolicy: REQUIRED_UPSTREAM,
     apply: (source) => applyLinuxQuitGuardPatch(source),
+  },
+  {
+    name: "linux-explicit-quit-prompt-bypass",
+    ciPolicy: REQUIRED_UPSTREAM,
+    apply: (source) => applyLinuxExplicitQuitPromptBypassPatch(source),
   },
   {
     name: "linux-explicit-tray-quit",

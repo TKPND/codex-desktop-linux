@@ -15,6 +15,9 @@ const {
 
 // Launch-action patches keep second launches, hotkey windows, and persisted
 // Linux settings coordinated with the generated launcher.
+const linuxQuitStateHelpers =
+  "let codexLinuxQuitInProgress=!1,codexLinuxExplicitQuitApproved=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxPrepareForExplicitQuit=()=>{codexLinuxExplicitQuitApproved=!0,codexLinuxMarkQuitInProgress()},codexLinuxShouldBypassQuitPrompt=()=>codexLinuxExplicitQuitApproved===!0,codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0,";
+
 function applyLinuxSettingsPersistencePatch(currentSource) {
   let patchedSource = currentSource;
 
@@ -109,8 +112,7 @@ function buildSemanticLinuxLaunchActionPatch({
   const notificationPrefix = notificationVar == null
     ? ""
     : `${notificationVar}.desktopNotificationManager.dismissByNavigationPath(e),`;
-  const quitState =
-    "let codexLinuxQuitInProgress=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0,";
+  const quitState = linuxQuitStateHelpers;
   const directHandler = appVar == null
     ? ""
     : `,codexLinuxSecondInstanceHandler=(e,t)=>{codexLinuxHandleLaunchActionArgsFallback(t,()=>{${fallbackFn}()})},codexLinuxBeforeQuitHandler=()=>{typeof codexLinuxMarkQuitInProgress===\`function\`&&codexLinuxMarkQuitInProgress()}`;
@@ -228,7 +230,7 @@ function applyLinuxLaunchActionArgsPatch(currentSource) {
   const hotkeyWindowLaunchActionPatch = socketHotkeyWindowLaunchActionPatch
     .replace(
       "let ae=async(e,t)=>{",
-      `let codexLinuxQuitInProgress=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0,codexLinuxGetSetting=e=>process.platform!==\`linux\`||M.globalState.get(e)!==!1,codexLinuxIsTrayEnabled=()=>codexLinuxGetSetting(\`${linuxSettingsKeys.systemTray}\`),codexLinuxIsWarmStartEnabled=()=>codexLinuxGetSetting(\`${linuxSettingsKeys.warmStart}\`),codexLinuxIsPromptWindowEnabled=()=>codexLinuxGetSetting(\`${linuxSettingsKeys.promptWindow}\`),ae=async(e,t)=>{`,
+      `${linuxQuitStateHelpers}codexLinuxGetSetting=e=>process.platform!==\`linux\`||M.globalState.get(e)!==!1,codexLinuxIsTrayEnabled=()=>codexLinuxGetSetting(\`${linuxSettingsKeys.systemTray}\`),codexLinuxIsWarmStartEnabled=()=>codexLinuxGetSetting(\`${linuxSettingsKeys.warmStart}\`),codexLinuxIsPromptWindowEnabled=()=>codexLinuxGetSetting(\`${linuxSettingsKeys.promptWindow}\`),ae=async(e,t)=>{`,
     )
     .replace(
       "codexLinuxShowHotkeyWindow=async()=>{let e=P.hotkeyWindowLifecycleManager;typeof e.openHome===`function`?await e.openHome():typeof e.show===`function`?await e.show():await P.ensureHostWindow(z)}",
@@ -271,7 +273,10 @@ function applyLinuxLaunchActionArgsPatch(currentSource) {
 
   if (
     patchedSource.includes("codexLinuxQuitInProgress=!1") &&
+    patchedSource.includes("codexLinuxExplicitQuitApproved=!1") &&
     patchedSource.includes("codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0}") &&
+    patchedSource.includes("codexLinuxPrepareForExplicitQuit=()=>{codexLinuxExplicitQuitApproved=!0,codexLinuxMarkQuitInProgress()}") &&
+    patchedSource.includes("codexLinuxShouldBypassQuitPrompt=()=>codexLinuxExplicitQuitApproved===!0") &&
     patchedSource.includes("codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0") &&
     patchedSource.includes("codexLinuxGetSetting=e=>") &&
     patchedSource.includes("codexLinuxGetHotkeyWindowController=()=>") &&

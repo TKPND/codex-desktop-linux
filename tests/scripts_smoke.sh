@@ -924,78 +924,117 @@ test_linux_explicit_quit_patch_smoke() {
 let n=require(`electron`),i=require(`node:path`),a=require(`node:fs`);
 var pb=class{getNativeTrayMenuItems(){return[{label:rB(this.appName),click:()=>{n.app.quit()}}]}};
 function qB(r,o){if(o.type===`quit-app`){n.app.quit();return}return o}
+n.app.on(`before-quit`,o=>{let s=BI(),c=t.sr().some(e=>e.status===`ACTIVE`);if(e||i.canQuitWithoutPrompt()||r||!s&&!c){g=!0,a.markAppQuitting();return}let l=n.app.getName();if(n.dialog.showMessageBoxSync({type:`warning`,buttons:[`Quit`,`Cancel`],defaultId:0,cancelId:1,noLink:!0,title:`Quit ${l}?`,message:`Quit ${l}?`,detail:vB({hasInProgressLocalConversation:s,hasEnabledAutomations:c})})!==0){o.preventDefault();return}i.markQuitApproved(),g=!0,a.markAppQuitting()});
 JS
 )"
     make_fake_extracted_asar "$extracted" "$bundle_body"
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_contains "$extracted/.vite/build/main-test.js" '{label:rB(this.appName),click:()=>{typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),n.app.quit()}}'
-    assert_contains "$extracted/.vite/build/main-test.js" 'if(o.type===`quit-app`){typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),n.app.quit();return}'
+    assert_contains "$extracted/.vite/build/main-test.js" 'codexLinuxPrepareForExplicitQuit=()=>{codexLinuxExplicitQuitApproved=!0,codexLinuxMarkQuitInProgress()}'
+    assert_contains "$extracted/.vite/build/main-test.js" 'codexLinuxShouldBypassQuitPrompt=()=>codexLinuxExplicitQuitApproved===!0'
+    assert_contains "$extracted/.vite/build/main-test.js" '{label:rB(this.appName),click:()=>{typeof codexLinuxPrepareForExplicitQuit===`function`?codexLinuxPrepareForExplicitQuit():typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),n.app.quit()}}'
+    assert_contains "$extracted/.vite/build/main-test.js" 'if(o.type===`quit-app`){typeof codexLinuxPrepareForExplicitQuit===`function`?codexLinuxPrepareForExplicitQuit():typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),n.app.quit();return}'
+    assert_contains "$extracted/.vite/build/main-test.js" 'if((typeof codexLinuxShouldBypassQuitPrompt===`function`&&codexLinuxShouldBypassQuitPrompt())||e||i.canQuitWithoutPrompt()||r||!s&&!c){g=!0,a.markAppQuitting();return}'
     assert_not_contains "$output_log" 'WARN: Could not find tray quit menu handler'
     assert_not_contains "$output_log" 'WARN: Could not find quit-app IPC handler'
+    assert_not_contains "$output_log" 'WARN: Could not find before-quit confirmation guard'
 
     node - "$extracted/.vite/build/main-test.js" <<'NODE'
 const fs = require("fs");
 
 const source = fs.readFileSync(process.argv[2], "utf8");
-const traySnippet = source.match(/\{label:rB\(this\.appName\),click:\(\)=>\{typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress\(\),n\.app\.quit\(\)\}\}/)?.[0];
-const quitAppSnippet = source.match(/if\(o\.type===`quit-app`\)\{typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress\(\),n\.app\.quit\(\);return\}/)?.[0];
-if (!traySnippet || !quitAppSnippet) {
+const helperSnippet = source.match(/let codexLinuxQuitInProgress=!1,[^;]*codexLinuxShouldBypassQuitPrompt=\(\)=>codexLinuxExplicitQuitApproved===!0,[^;]*codexLinuxIsQuitInProgress=\(\)=>codexLinuxQuitInProgress===!0;/)?.[0];
+const traySnippet = source.match(/\{label:rB\(this\.appName\),click:\(\)=>\{typeof codexLinuxPrepareForExplicitQuit===`function`\?codexLinuxPrepareForExplicitQuit\(\):typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress\(\),n\.app\.quit\(\)\}\}/)?.[0];
+const quitAppSnippet = source.match(/if\(o\.type===`quit-app`\)\{typeof codexLinuxPrepareForExplicitQuit===`function`\?codexLinuxPrepareForExplicitQuit\(\):typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress\(\),n\.app\.quit\(\);return\}/)?.[0];
+const beforeQuitSnippet = source.match(/if\(\(typeof codexLinuxShouldBypassQuitPrompt===`function`&&codexLinuxShouldBypassQuitPrompt\(\)\)\|\|e\|\|i\.canQuitWithoutPrompt\(\)\|\|r\|\|!s&&!c\)\{g=!0,a\.markAppQuitting\(\);return\}/)?.[0];
+if (!helperSnippet || !traySnippet || !quitAppSnippet || !beforeQuitSnippet) {
   throw new Error("Could not extract explicit quit snippets");
 }
 
 function runTrayQuit({ withHelper = true } = {}) {
-  const state = { markCalls: 0, quitCalls: 0 };
+  const state = { markCalls: 0, prepareCalls: 0, quitCalls: 0 };
   const app = { quit() { state.quitCalls += 1; } };
-  const mark = withHelper ? () => { state.markCalls += 1; } : undefined;
+  const mark = () => { state.markCalls += 1; };
+  const prepare = withHelper ? () => { state.prepareCalls += 1; mark(); } : undefined;
   const factory = new Function(
     "n",
     "rB",
+    "codexLinuxPrepareForExplicitQuit",
     "codexLinuxMarkQuitInProgress",
     `return (${traySnippet}).click;`,
   );
-  const click = factory({ app }, () => "Quit", mark);
+  const click = factory({ app }, () => "Quit", prepare, mark);
   click();
   return state;
 }
 
 function runQuitApp({ withHelper = true } = {}) {
-  const state = { markCalls: 0, quitCalls: 0 };
+  const state = { markCalls: 0, prepareCalls: 0, quitCalls: 0 };
   const app = { quit() { state.quitCalls += 1; } };
-  const mark = withHelper ? () => { state.markCalls += 1; } : undefined;
+  const mark = () => { state.markCalls += 1; };
+  const prepare = withHelper ? () => { state.prepareCalls += 1; mark(); } : undefined;
   const handler = new Function(
     "n",
+    "codexLinuxPrepareForExplicitQuit",
     "codexLinuxMarkQuitInProgress",
     "o",
     `${quitAppSnippet};return null;`,
   );
-  handler({ app }, mark, { type: "quit-app" });
+  handler({ app }, prepare, mark, { type: "quit-app" });
   return state;
 }
 
+function runBeforeQuitBypass() {
+  const state = { markCalls: 0 };
+  const scope = new Function(
+    "BI",
+    "t",
+    `${helperSnippet}return {runBeforeQuitCheck(e,i,r,a){let s=BI(),c=t.sr().some(e=>e.status===\`ACTIVE\`);${beforeQuitSnippet}return \`prompt\`;},prepare:codexLinuxPrepareForExplicitQuit,bypass:codexLinuxShouldBypassQuitPrompt};`,
+  )(
+    () => true,
+    { sr: () => [{ status: "ACTIVE" }] },
+  );
+  const controller = {
+    canQuitWithoutPrompt() { return false; },
+    markQuitApproved() {},
+  };
+  const appQuitting = { markAppQuitting() { state.markCalls += 1; } };
+  scope.prepare();
+  const bypassed = scope.runBeforeQuitCheck(false, controller, false, appQuitting);
+  return { state, bypassed, shouldBypass: scope.bypass() };
+}
+
 let state = runTrayQuit();
-if (state.markCalls !== 1 || state.quitCalls !== 1) {
-  throw new Error("tray quit should mark quit-in-progress before quitting");
+if (state.prepareCalls !== 1 || state.markCalls !== 1 || state.quitCalls !== 1) {
+  throw new Error("tray quit should prepare explicit quit before quitting");
 }
 
 state = runQuitApp();
-if (state.markCalls !== 1 || state.quitCalls !== 1) {
-  throw new Error("quit-app IPC should mark quit-in-progress before quitting");
+if (state.prepareCalls !== 1 || state.markCalls !== 1 || state.quitCalls !== 1) {
+  throw new Error("quit-app IPC should prepare explicit quit before quitting");
 }
 
 state = runTrayQuit({ withHelper: false });
-if (state.markCalls !== 0 || state.quitCalls !== 1) {
-  throw new Error("tray quit should still quit when the helper is unavailable");
+if (state.prepareCalls !== 0 || state.markCalls !== 1 || state.quitCalls !== 1) {
+  throw new Error("tray quit should still fall back to the quit-in-progress marker");
 }
 
 state = runQuitApp({ withHelper: false });
-if (state.markCalls !== 0 || state.quitCalls !== 1) {
-  throw new Error("quit-app IPC should still quit when the helper is unavailable");
+if (state.prepareCalls !== 0 || state.markCalls !== 1 || state.quitCalls !== 1) {
+  throw new Error("quit-app IPC should still fall back to the quit-in-progress marker");
+}
+
+state = runBeforeQuitBypass();
+if (!state.shouldBypass || state.bypassed !== undefined || state.state.markCalls !== 1) {
+  throw new Error("before-quit should bypass the Linux quit confirmation after an explicit quit");
 }
 NODE
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress()' '2'
+    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'codexLinuxPrepareForExplicitQuit=()=>{codexLinuxExplicitQuitApproved=!0,codexLinuxMarkQuitInProgress()}' '1'
+    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'codexLinuxShouldBypassQuitPrompt=()=>codexLinuxExplicitQuitApproved===!0' '1'
+    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'typeof codexLinuxPrepareForExplicitQuit===`function`?codexLinuxPrepareForExplicitQuit():typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress()' '2'
+    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'typeof codexLinuxShouldBypassQuitPrompt===`function`&&codexLinuxShouldBypassQuitPrompt()' '1'
 }
 
 test_keybinds_settings_tab_patch_smoke() {

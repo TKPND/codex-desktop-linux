@@ -366,13 +366,18 @@ function applyLinuxQuitGuardPatch(currentSource) {
   let patchedSource = currentSource;
 
   const quitGuardNeedle = "let n=require(`electron`),i=require(`node:path`),o=require(`node:fs`);";
-  const quitGuardPatch =
-    "let n=require(`electron`),i=require(`node:path`),o=require(`node:fs`);let codexLinuxQuitInProgress=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0;";
-  const quitGuardSuffix =
+  const legacyQuitGuardSuffix =
     "let codexLinuxQuitInProgress=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0;";
+  const quitGuardSuffix =
+    "let codexLinuxQuitInProgress=!1,codexLinuxExplicitQuitApproved=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxPrepareForExplicitQuit=()=>{codexLinuxExplicitQuitApproved=!0,codexLinuxMarkQuitInProgress()},codexLinuxShouldBypassQuitPrompt=()=>codexLinuxExplicitQuitApproved===!0,codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0;";
+  const quitGuardPatch = `${quitGuardNeedle}${quitGuardSuffix}`;
 
-  if (patchedSource.includes("codexLinuxQuitInProgress=!1,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0;")) {
+  if (patchedSource.includes("codexLinuxExplicitQuitApproved=!1")) {
     return patchedSource;
+  }
+
+  if (patchedSource.includes(legacyQuitGuardSuffix)) {
+    return patchedSource.replace(legacyQuitGuardSuffix, quitGuardSuffix);
   }
 
   if (patchedSource.includes(quitGuardNeedle)) {
@@ -398,11 +403,51 @@ function applyLinuxQuitGuardPatch(currentSource) {
   return patchedSource;
 }
 
+function linuxExplicitQuitExpression() {
+  return "typeof codexLinuxPrepareForExplicitQuit===`function`?codexLinuxPrepareForExplicitQuit():typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),";
+}
+
+function applyLinuxExplicitQuitPromptBypassPatch(currentSource) {
+  let patchedSource = currentSource;
+
+  const promptBypassExpression =
+    "(typeof codexLinuxShouldBypassQuitPrompt===`function`&&codexLinuxShouldBypassQuitPrompt())||";
+  const promptBypassGuard = `if(${promptBypassExpression}`;
+  const beforeQuitNeedle =
+    "if(e||i.canQuitWithoutPrompt()||r||!s&&!c){g=!0,a.markAppQuitting();return}";
+  const beforeQuitPatch =
+    `if(${promptBypassExpression}e||i.canQuitWithoutPrompt()||r||!s&&!c){g=!0,a.markAppQuitting();return}`;
+  const beforeQuitRegex =
+    /if\(([A-Za-z_$][\w$]*)\|\|([A-Za-z_$][\w$]*)\.canQuitWithoutPrompt\(\)\|\|([A-Za-z_$][\w$]*)\|\|!([A-Za-z_$][\w$]*)&&!([A-Za-z_$][\w$]*)\)\{([A-Za-z_$][\w$]*)=!0,([A-Za-z_$][\w$]*)\.markAppQuitting\(\);return\}/;
+
+  if (patchedSource.includes(promptBypassGuard)) {
+    return patchedSource;
+  }
+
+  if (patchedSource.includes(beforeQuitNeedle)) {
+    return patchedSource.replace(beforeQuitNeedle, beforeQuitPatch);
+  }
+
+  if (beforeQuitRegex.test(patchedSource)) {
+    patchedSource = patchedSource.replace(
+      beforeQuitRegex,
+      (_match, updateInstallVar, quitControllerVar, appQuittingVar, activeConversationVar, automationVar, quittingStateVar, appQuittingControllerVar) =>
+        `if(${promptBypassExpression}${updateInstallVar}||${quitControllerVar}.canQuitWithoutPrompt()||${appQuittingVar}||!${activeConversationVar}&&!${automationVar}){${quittingStateVar}=!0,${appQuittingControllerVar}.markAppQuitting();return}`,
+    );
+  } else if (
+    patchedSource.includes("showMessageBoxSync({type:`warning`,buttons:[`Quit`,`Cancel`]") &&
+    patchedSource.includes(".canQuitWithoutPrompt()")
+  ) {
+    console.warn("WARN: Could not find before-quit confirmation guard — skipping Linux explicit quit prompt bypass patch");
+  }
+
+  return patchedSource;
+}
+
 function applyLinuxExplicitTrayQuitPatch(currentSource) {
   let patchedSource = currentSource;
 
-  const quitMarkerExpression =
-    "typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),";
+  const quitMarkerExpression = linuxExplicitQuitExpression();
 
   const trayQuitNeedle = "{label:rB(this.appName),click:()=>{n.app.quit()}}";
   const trayQuitPatch =
@@ -432,8 +477,7 @@ function applyLinuxExplicitTrayQuitPatch(currentSource) {
 function applyLinuxExplicitIpcQuitPatch(currentSource) {
   let patchedSource = currentSource;
 
-  const quitMarkerExpression =
-    "typeof codexLinuxMarkQuitInProgress===`function`&&codexLinuxMarkQuitInProgress(),";
+  const quitMarkerExpression = linuxExplicitQuitExpression();
 
   const quitAppNeedle = "if(o.type===`quit-app`){n.app.quit();return}";
   const quitAppPatch = `if(o.type===\`quit-app\`){${quitMarkerExpression}n.app.quit();return}`;
@@ -737,6 +781,7 @@ module.exports = {
   applyBrowserUseNodeReplApprovalPatch,
   applyLinuxAvatarOverlayMousePassthroughPatch,
   applyLinuxExplicitIpcQuitPatch,
+  applyLinuxExplicitQuitPromptBypassPatch,
   applyLinuxExplicitTrayQuitPatch,
   applyLinuxFileManagerPatch,
   applyLinuxGitOriginsSourceFallbackPatch,
