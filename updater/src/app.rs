@@ -877,7 +877,7 @@ fn installed_version_satisfies_candidate(installed: &str, candidate: &str) -> bo
     }
 
     match compare_generated_versions(installed, candidate) {
-        Some(std::cmp::Ordering::Less) => false,
+        Some(std::cmp::Ordering::Less) => true,
         Some(_) => true,
         None => installed == candidate,
     }
