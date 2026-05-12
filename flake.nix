@@ -200,7 +200,7 @@ PY
 
           outputHashAlgo = "sha256";
           outputHashMode = "recursive";
-          outputHash = "sha256-A4gRYx5hAJD5OoNog1DI0lDERt3Po1xyJcpib7dCX0M=";
+          outputHash = "sha256-UnqbizEDTpNCH1tViVVAKpE8NPBRn5JMy0GfcAhswkw=";
           unsafeDiscardReferences.out = true;
 
           dontConfigure = true;
@@ -215,6 +215,7 @@ PY
             export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
             export npm_config_cafile="$SSL_CERT_FILE"
             export CARGO_HOME="$TMPDIR/cargo-home"
+            export CARGO_BUILD_JOBS=1
             export CODEX_MANAGED_NODE_SOURCE="${pkgs.nodejs}"
             mkdir -p "$HOME" "$npm_config_cache" "$CARGO_HOME"
 

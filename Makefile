@@ -1,4 +1,4 @@
-SHELL := /bin/bash
+SHELL := bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 APP_DIR := $(CURDIR)/codex-app

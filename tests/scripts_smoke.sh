@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -72,7 +72,7 @@ JS
 
 make_fake_app() {
     local app_dir="$1"
-    "$REPO_DIR/tests/fixtures/create-packaged-app-fixture.sh" "$app_dir"
+    bash "$REPO_DIR/tests/fixtures/create-packaged-app-fixture.sh" "$app_dir"
 }
 
 make_stub_bin_dir() {
@@ -102,11 +102,11 @@ test_deb_builder_smoke() {
     mkdir -p "$workspace" "$dist_dir"
     make_stub_bin_dir "$bin_dir"
     make_fake_app "$app_dir"
-    printf '#!/bin/bash\nexit 0\n' > "$updater_bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$updater_bin"
     chmod +x "$updater_bin"
 
     cat > "$bin_dir/dpkg" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 if [ "$1" = "--print-architecture" ]; then
     echo amd64
     exit 0
@@ -114,13 +114,13 @@ fi
 exit 0
 SCRIPT
     cat > "$bin_dir/dpkg-deb" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 output="${@: -1}"
 mkdir -p "$(dirname "$output")"
 touch "$output"
 SCRIPT
     cat > "$bin_dir/cargo" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 echo "cargo should not be called when UPDATER_BINARY_SOURCE exists" >&2
 exit 99
 SCRIPT
@@ -132,7 +132,7 @@ SCRIPT
     DIST_DIR_OVERRIDE="$dist_dir" \
     UPDATER_BINARY_SOURCE="$updater_bin" \
     PACKAGE_VERSION="2026.03.24.120000+deadbeef" \
-    "$REPO_DIR/scripts/build-deb.sh"
+    bash "$REPO_DIR/scripts/build-deb.sh"
 
     assert_file_exists "$dist_dir/codex-desktop_2026.03.24.120000+deadbeef_amd64.deb"
     assert_file_exists "$pkg_root/DEBIAN/prerm"
@@ -171,11 +171,11 @@ test_deb_builder_respects_package_identity() {
     mkdir -p "$workspace" "$dist_dir"
     make_stub_bin_dir "$bin_dir"
     make_fake_app "$app_dir"
-    printf '#!/bin/bash\nexit 0\n' > "$updater_bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$updater_bin"
     chmod +x "$updater_bin"
 
     cat > "$bin_dir/dpkg" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 if [ "$1" = "--print-architecture" ]; then
     echo amd64
     exit 0
@@ -183,13 +183,13 @@ fi
 exit 0
 SCRIPT
     cat > "$bin_dir/dpkg-deb" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 output="${@: -1}"
 mkdir -p "$(dirname "$output")"
 touch "$output"
 SCRIPT
     cat > "$bin_dir/cargo" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 echo "cargo should not be called when UPDATER_BINARY_SOURCE exists" >&2
 exit 99
 SCRIPT
@@ -203,7 +203,7 @@ SCRIPT
     PACKAGE_NAME="codex-cua-lab" \
     PACKAGE_DISPLAY_NAME="Codex CUA Lab" \
     PACKAGE_VERSION="2026.03.24.120000+deadbeef" \
-    "$REPO_DIR/scripts/build-deb.sh"
+    bash "$REPO_DIR/scripts/build-deb.sh"
 
     assert_file_exists "$dist_dir/codex-cua-lab_2026.03.24.120000+deadbeef_amd64.deb"
     assert_file_exists "$pkg_root/usr/bin/codex-cua-lab"
@@ -229,11 +229,11 @@ test_rpm_builder_smoke() {
     mkdir -p "$workspace" "$dist_dir"
     make_stub_bin_dir "$bin_dir"
     make_fake_app "$app_dir"
-    printf '#!/bin/bash\nexit 0\n' > "$updater_bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$updater_bin"
     chmod +x "$updater_bin"
 
     cat > "$bin_dir/rpmbuild" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 rpmdir=""
 while [ $# -gt 0 ]; do
     if [ "$1" = "--define" ]; then
@@ -250,7 +250,7 @@ mkdir -p "$rpmdir/x86_64"
 touch "$rpmdir/x86_64/codex-desktop-2026.03.24.120000-deadbeef.x86_64.rpm"
 SCRIPT
     cat > "$bin_dir/cargo" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 echo "cargo should not be called when UPDATER_BINARY_SOURCE exists" >&2
 exit 99
 SCRIPT
@@ -261,7 +261,7 @@ SCRIPT
     DIST_DIR_OVERRIDE="$dist_dir" \
     UPDATER_BINARY_SOURCE="$updater_bin" \
     PACKAGE_VERSION="2026.03.24.120000+deadbeef" \
-    "$REPO_DIR/scripts/build-rpm.sh"
+    bash "$REPO_DIR/scripts/build-rpm.sh"
 
     assert_file_exists "$dist_dir/codex-desktop-2026.03.24.120000-deadbeef.x86_64.rpm"
 }
@@ -277,20 +277,20 @@ test_missing_input_failure() {
     make_stub_bin_dir "$bin_dir"
     make_fake_app "$rpm_app_dir"
     cat > "$bin_dir/dpkg" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 echo amd64
 SCRIPT
     cat > "$bin_dir/dpkg-deb" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 exit 0
 SCRIPT
     chmod +x "$bin_dir/dpkg" "$bin_dir/dpkg-deb"
 
-    if PATH="$bin_dir:$PATH" APP_DIR_OVERRIDE="$workspace/does-not-exist" PKG_ROOT_OVERRIDE="$workspace/deb-root" "$REPO_DIR/scripts/build-deb.sh" >/dev/null 2>&1; then
+    if PATH="$bin_dir:$PATH" APP_DIR_OVERRIDE="$workspace/does-not-exist" PKG_ROOT_OVERRIDE="$workspace/deb-root" bash "$REPO_DIR/scripts/build-deb.sh" >/dev/null 2>&1; then
         fail "build-deb.sh should fail when APP_DIR is missing"
     fi
 
-    if APP_DIR_OVERRIDE="$rpm_app_dir" PACKAGED_RUNTIME_SOURCE="$workspace/does-not-exist.sh" "$REPO_DIR/scripts/build-rpm.sh" >"$rpm_log" 2>&1; then
+    if APP_DIR_OVERRIDE="$rpm_app_dir" PACKAGED_RUNTIME_SOURCE="$workspace/does-not-exist.sh" bash "$REPO_DIR/scripts/build-rpm.sh" >"$rpm_log" 2>&1; then
         fail "build-rpm.sh should fail when PACKAGED_RUNTIME_SOURCE is missing"
     fi
     assert_contains "$rpm_log" "Missing packaged launcher runtime helper"
@@ -304,7 +304,7 @@ test_make_build_app_uses_installer_download_flow_by_default() {
     mkdir -p "$workspace"
 
     cat > "$workspace/install.sh" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 set -eu
 printf '%s\n' "$#" > "$TEST_INSTALL_LOG"
 if [ "$#" -gt 0 ]; then
@@ -404,7 +404,7 @@ test_managed_node_runtime_source_install() {
     mkdir -p "$source_dir/bin" "$install_dir/resources"
     for binary in node npm npx; do
         cat > "$source_dir/bin/$binary" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 case "$(basename "$0")" in
     node) echo v22.22.2 ;;
     *) echo 10.9.7 ;;
@@ -446,7 +446,11 @@ test_launcher_template_sanity() {
     assert_contains "$REPO_DIR/scripts/lib/native-modules.sh" "better_sqlite3_build_version"
     assert_contains "$REPO_DIR/scripts/lib/native-modules.sh" "CODEX_ELECTRON_CACHE_DIR"
     assert_contains "$REPO_DIR/scripts/lib/native-modules.sh" "--continue-at -"
-    assert_contains "$REPO_DIR/launcher/start.sh.template" 'python3 -m http.server "$CODEX_LINUX_WEBVIEW_PORT" --bind 127.0.0.1'
+    assert_file_exists "$REPO_DIR/launcher/webview-server.py"
+    assert_contains "$REPO_DIR/launcher/webview-server.py" "Cache-Control"
+    assert_contains "$REPO_DIR/launcher/webview-server.py" "If-Modified-Since"
+    assert_contains "$REPO_DIR/install.sh" "webview-server.py"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" 'python3 "$SCRIPT_DIR/.codex-linux/webview-server.py" "$CODEX_LINUX_WEBVIEW_PORT" --bind 127.0.0.1'
     assert_contains "$REPO_DIR/launcher/start.sh.template" "WEBVIEW_PID_FILE"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "owned_webview_server_pid"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "discover_webview_server_pid"
@@ -492,6 +496,10 @@ if "using_second_instance_handoff" not in source or "needs_cold_start" not in so
     raise SystemExit("launcher must have an explicit second-instance handoff mode")
 if "second_instance_handoff_ready" not in runtime_body:
     raise SystemExit("second-instance handoff must skip cold-start setup")
+if "clear_bundled_marketplace_tmp_cache\nmonitor_bundled_marketplace_tmp_permissions\nreconcile_runtime_state" in runtime_body:
+    raise SystemExit("warm-start path must not clear bundled marketplace temp cache")
+if not re.search(r'if needs_cold_start; then\s+clear_bundled_marketplace_tmp_cache\s+# The runtime marketplace is populated asynchronously.*?monitor_bundled_marketplace_tmp_permissions\s+sync_browser_use_bundled_plugin_cache', runtime_body, re.S):
+    raise SystemExit("bundled marketplace cleanup must run only on cold start immediately before plugin sync")
 if 'if needs_cold_start && [ -z "${CODEX_CLI_PATH:-}" ]; then' not in runtime_body:
     raise SystemExit("second-instance handoff must skip CLI lookup")
 if 'if needs_cold_start && [ -z "$CODEX_CLI_PATH" ]; then' not in runtime_body:
@@ -535,7 +543,7 @@ source_path, output_path = sys.argv[1:3]
 source = open(source_path, encoding="utf-8").read()
 start = source.index("is_wsl_environment() {")
 end = source.index("configure_side_by_side_app_env() {")
-probe = "#!/bin/bash\n" + source[start:end] + r'''
+probe = "#!/usr/bin/env bash\n" + source[start:end] + r'''
 set -Eeuo pipefail
 
 CODEX_LINUX_APP_ID="${CODEX_LINUX_APP_ID:-codex-desktop}"
@@ -640,6 +648,9 @@ PY
     assert_contains "$REPO_DIR/launcher/start.sh.template" "run_update_manager"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "sync_browser_use_bundled_plugin_cache"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "sync_chrome_bundled_plugin_cache"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "make_tree_owner_writable"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "clear_bundled_marketplace_tmp_cache"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "monitor_bundled_marketplace_tmp_permissions"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "extension-id.json"
     assert_contains "$REPO_DIR/launcher/start.sh.template" ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"
     assert_contains "$REPO_DIR/launcher/start.sh.template" ".config/chromium/NativeMessagingHosts"
@@ -711,6 +722,7 @@ test_side_by_side_launcher_identity() {
     bash -c 'source "$1"; validate_app_identity; create_start_script' _ "$REPO_DIR/install.sh"
 
     assert_file_exists "$app_dir/start.sh"
+    assert_file_exists "$app_dir/.codex-linux/webview-server.py"
     assert_contains "$app_dir/start.sh" "CODEX_LINUX_APP_ID=codex-cua-lab"
     assert_contains "$app_dir/start.sh" "CODEX_LINUX_APP_DISPLAY_NAME=Codex\\\\ CUA\\\\ Lab"
     assert_contains "$app_dir/start.sh" 'CODEX_LINUX_WEBVIEW_PORT=${CODEX_WEBVIEW_PORT:-5176}'
@@ -724,12 +736,12 @@ test_side_by_side_launcher_identity() {
     assert_contains "$app_dir/start.sh" '--user-data-dir="${CODEX_ELECTRON_USER_DATA_DIR:-$APP_STATE_DIR/electron-user-data}"'
     assert_contains "$app_dir/start.sh" "--force-renderer-accessibility"
     assert_contains "$app_dir/start.sh" 'LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/$CODEX_LINUX_APP_ID"'
-    XDG_CACHE_HOME="$workspace/cache" XDG_STATE_HOME="$workspace/state" XDG_RUNTIME_DIR="$workspace/runtime" "$app_dir/start.sh" --help >"$help_log"
+    XDG_CACHE_HOME="$workspace/cache" XDG_STATE_HOME="$workspace/state" XDG_RUNTIME_DIR="$workspace/runtime" bash "$app_dir/start.sh" --help >"$help_log"
     assert_contains "$help_log" "Launches the Codex CUA Lab app."
     assert_contains "$help_log" "codex-cua-lab/launcher.log"
 
     ln -s "$app_dir/start.sh" "$bin_dir/codex-cua-lab"
-    XDG_CACHE_HOME="$workspace/cache" XDG_STATE_HOME="$workspace/state" XDG_RUNTIME_DIR="$workspace/runtime" "$bin_dir/codex-cua-lab" --help >"$symlink_help_log"
+    XDG_CACHE_HOME="$workspace/cache" XDG_STATE_HOME="$workspace/state" XDG_RUNTIME_DIR="$workspace/runtime" bash "$bin_dir/codex-cua-lab" --help >"$symlink_help_log"
     assert_contains "$symlink_help_log" "Launches the Codex CUA Lab app."
 }
 
@@ -747,6 +759,7 @@ test_browser_use_node_repl_fallback_runtime() {
     local archive="$workspace/runtime.tar.xz"
     local output_log="$workspace/output.log"
     local archive_sha
+    local true_bin
 
     mkdir -p "$workspace" "$install_dir/resources" "$archive_root/codex-primary-runtime/dependencies/bin"
     make_fake_browser_use_upstream_app "$app_dir"
@@ -755,7 +768,8 @@ test_browser_use_node_repl_fallback_runtime() {
     printf '\xfe\xed\xfa\xcf' > "$app_dir/Contents/Resources/node_repl"
     chmod +x "$app_dir/Contents/Resources/node_repl"
 
-    cp /bin/true "$archive_root/codex-primary-runtime/dependencies/bin/node_repl"
+    true_bin="$(type -P true)"
+    cp "$true_bin" "$archive_root/codex-primary-runtime/dependencies/bin/node_repl"
     chmod 0755 "$archive_root/codex-primary-runtime/dependencies/bin/node_repl"
     tar -cJf "$archive" -C "$archive_root" codex-primary-runtime
     archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
@@ -790,7 +804,7 @@ test_browser_use_node_repl_fallback_runtime() {
 
     assert_file_exists "$install_dir/resources/node_repl"
     assert_file_exists "$install_dir/resources/plugins/openai-bundled/plugins/browser-use/scripts/browser-client.mjs"
-    cmp -s /bin/true "$install_dir/resources/node_repl" || fail "Expected fallback node_repl to come from the runtime archive"
+    cmp -s "$true_bin" "$install_dir/resources/node_repl" || fail "Expected fallback node_repl to come from the runtime archive"
     assert_contains "$install_dir/resources/plugins/openai-bundled/plugins/browser-use/scripts/browser-client.mjs" "codexLinuxSiteStatusAllowlistFallback"
     assert_contains "$output_log" "Browser Use node_repl runtime is not a Linux executable for x86_64; skipping"
     assert_not_contains "$output_log" "WARN.*Browser Use node_repl runtime is not a Linux executable"

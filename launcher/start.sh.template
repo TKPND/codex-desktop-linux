@@ -112,6 +112,53 @@ log_phase() {
     echo "[$(date -Is)] launcher_phase=$phase elapsedMs=$elapsed_ms"
 }
 
+make_tree_owner_writable() {
+    local path="$1"
+
+    [ -e "$path" ] || return 0
+    chmod -R u+rwX "$path" 2>/dev/null || true
+}
+
+remove_tree_if_exists() {
+    local path="$1"
+
+    [ -e "$path" ] || return 0
+    make_tree_owner_writable "$path"
+    rm -rf "$path"
+}
+
+fix_bundled_marketplace_tmp_permissions() {
+    local codex_home="${CODEX_HOME:-$HOME/.codex}"
+    local marketplace_tmp_root="$codex_home/.tmp/bundled-marketplaces"
+
+    [ -d "$marketplace_tmp_root" ] || return 0
+    find "$marketplace_tmp_root" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+    find "$marketplace_tmp_root" -type f -exec chmod u+rw {} + 2>/dev/null || true
+}
+
+clear_bundled_marketplace_tmp_cache() {
+    local codex_home="${CODEX_HOME:-$HOME/.codex}"
+    local marketplace_tmp_root="$codex_home/.tmp/bundled-marketplaces"
+    local path
+
+    fix_bundled_marketplace_tmp_permissions
+    for path in "$marketplace_tmp_root"/openai-bundled "$marketplace_tmp_root"/openai-bundled.staging-*; do
+        [ -e "$path" ] || continue
+        remove_tree_if_exists "$path"
+    done
+}
+
+monitor_bundled_marketplace_tmp_permissions() {
+    (
+        local i=0
+        while [ "$i" -lt 300 ]; do
+            fix_bundled_marketplace_tmp_permissions
+            sleep 0.1
+            i=$((i + 1))
+        done
+    ) &
+}
+
 import_graphical_env_entry() {
     local entry="$1"
     local name="${entry%%=*}"
@@ -357,16 +404,17 @@ sync_browser_use_bundled_plugin_cache() {
 
     cache_parent="$(dirname "$cache_plugin")"
     tmp_plugin="$cache_parent/.browser-use-$version.tmp.$$"
-    rm -rf "$tmp_plugin"
+    remove_tree_if_exists "$tmp_plugin"
     mkdir -p "$cache_parent"
 
     if cp -R "$source_plugin" "$tmp_plugin"; then
+        make_tree_owner_writable "$tmp_plugin"
         find "$tmp_plugin" -type f -name '*:com.apple.*' -delete
-        rm -rf "$cache_plugin"
+        remove_tree_if_exists "$cache_plugin"
         mv "$tmp_plugin" "$cache_plugin"
         echo "Browser Use plugin cache synced from bundled resources: $cache_plugin"
     else
-        rm -rf "$tmp_plugin"
+        remove_tree_if_exists "$tmp_plugin"
         echo "Browser Use plugin cache sync failed; continuing with existing cache."
     fi
 }
@@ -523,23 +571,24 @@ sync_chrome_bundled_plugin_cache() {
     if [ "$needs_copy" -eq 1 ]; then
         cache_parent="$(dirname "$cache_plugin")"
         tmp_plugin="$cache_parent/.chrome-$version.tmp.$$"
-        rm -rf "$tmp_plugin"
+        remove_tree_if_exists "$tmp_plugin"
         mkdir -p "$cache_parent"
 
         if cp -R "$source_plugin" "$tmp_plugin"; then
+            make_tree_owner_writable "$tmp_plugin"
             find "$tmp_plugin" -type f -name '*:com.apple.*' -delete
-            rm -rf "$cache_plugin"
+            remove_tree_if_exists "$cache_plugin"
             mv "$tmp_plugin" "$cache_plugin"
             echo "Chrome plugin cache synced from bundled resources: $cache_plugin"
         else
-            rm -rf "$tmp_plugin"
+            remove_tree_if_exists "$tmp_plugin"
             echo "Chrome plugin cache sync failed; continuing with existing cache."
             return 0
         fi
     fi
 
     if [ -e "$cache_root/latest" ] && [ ! -L "$cache_root/latest" ]; then
-        rm -rf "$cache_root/latest"
+        remove_tree_if_exists "$cache_root/latest"
     fi
     ln -sfn "$version" "$cache_root/latest"
 
@@ -554,7 +603,7 @@ sync_chrome_bundled_plugin_cache() {
             echo "Chrome bundled marketplace sync failed; continuing with existing marketplace cache."
     fi
     if [ -e "$marketplace_plugin_link" ] && [ ! -L "$marketplace_plugin_link" ]; then
-        rm -rf "$marketplace_plugin_link"
+        remove_tree_if_exists "$marketplace_plugin_link"
     fi
     ln -sfn "$cache_root/latest" "$marketplace_plugin_link"
 
@@ -611,16 +660,17 @@ sync_computer_use_bundled_plugin_cache() {
 
     cache_parent="$(dirname "$cache_plugin")"
     tmp_plugin="$cache_parent/.computer-use-$version.tmp.$$"
-    rm -rf "$tmp_plugin"
+    remove_tree_if_exists "$tmp_plugin"
     mkdir -p "$cache_parent"
 
     if cp -R "$source_plugin" "$tmp_plugin"; then
+        make_tree_owner_writable "$tmp_plugin"
         find "$tmp_plugin" -type f -name '*:com.apple.*' -delete
-        rm -rf "$cache_plugin"
+        remove_tree_if_exists "$cache_plugin"
         mv "$tmp_plugin" "$cache_plugin"
         echo "Computer Use plugin cache synced from bundled resources: $cache_plugin"
     else
-        rm -rf "$tmp_plugin"
+        remove_tree_if_exists "$tmp_plugin"
         echo "Computer Use plugin cache sync failed; continuing with existing cache."
     fi
 }
@@ -1047,7 +1097,7 @@ pid_has_webview_server_cmdline() {
     [ -d "/proc/$pid" ] || return 1
     pid_is_current_user "$pid" || return 1
     cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-    [[ "$cmdline" == *"http.server $CODEX_LINUX_WEBVIEW_PORT"* ]]
+    [[ "$cmdline" == *"http.server $CODEX_LINUX_WEBVIEW_PORT"* || "$cmdline" == *"webview-server.py $CODEX_LINUX_WEBVIEW_PORT"* ]]
 }
 
 pid_is_webview_server() {
@@ -1244,7 +1294,7 @@ ensure_webview_server() {
     stop_owned_webview_server
 
     cd "$WEBVIEW_DIR"
-    python3 -m http.server "$CODEX_LINUX_WEBVIEW_PORT" --bind 127.0.0.1 &
+    python3 "$SCRIPT_DIR/.codex-linux/webview-server.py" "$CODEX_LINUX_WEBVIEW_PORT" --bind 127.0.0.1 &
     STARTED_WEBVIEW_PID=$!
     echo "$STARTED_WEBVIEW_PID" > "$WEBVIEW_PID_FILE"
 
@@ -1678,6 +1728,10 @@ fi
 
 export_packaged_runtime_env
 if needs_cold_start; then
+    clear_bundled_marketplace_tmp_cache
+    # The runtime marketplace is populated asynchronously and can briefly
+    # recreate read-only plugin cache trees before the sync below replaces them.
+    monitor_bundled_marketplace_tmp_permissions
     sync_browser_use_bundled_plugin_cache
     sync_chrome_bundled_plugin_cache
     sync_computer_use_bundled_plugin_cache
