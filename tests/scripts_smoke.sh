@@ -1117,7 +1117,7 @@ PY
     # bounded-execution defenses preserved (0.2 s watchdog + 2 s curl cap).
     assert_contains "$REPO_DIR/launcher/start.sh.template" '/dev/tcp/127.0.0.1/"$CODEX_LINUX_WEBVIEW_PORT"'
     assert_contains "$REPO_DIR/launcher/start.sh.template" "kill -9 \"\$probe_pid\""
-    assert_contains "$REPO_DIR/launcher/start.sh.template" 'curl --disable --silent --show-error --fail --max-time 2'
+    assert_contains "$REPO_DIR/launcher/start.sh.template" 'curl --disable --noproxy 127.0.0.1,localhost --silent --show-error --fail --max-time 2'
     assert_contains "$REPO_DIR/launcher/start.sh.template" "for attempt in \$(seq 1 250)"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "sleep 0.02"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "Webview origin verified."
