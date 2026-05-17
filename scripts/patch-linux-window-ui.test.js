@@ -1490,7 +1490,7 @@ test("handles literal Chrome plugin gate names", () => {
   assert.doesNotMatch(patched, /installWhenMissing:!0,name:'chrome-internal'/);
 });
 
-test("reports missing required Chrome plugin auto-install gate as upstream validation failure", () => {
+test("reports missing required Chrome plugin auto-install gate as required upstream validation failure", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-patch-report-missing-chrome-"));
   try {
     const buildDir = path.join(tempRoot, ".vite", "build");
@@ -1501,11 +1501,11 @@ test("reports missing required Chrome plugin auto-install gate as upstream valid
     captureWarns(() => patchExtractedApp(tempRoot, { report }));
 
     const pluginGatePatch = report.patches.find((patch) => patch.name === "linux-chrome-plugin-auto-install");
-    assert.equal(pluginGatePatch.status, "skipped-optional");
+    assert.equal(pluginGatePatch.status, "failed-required");
     assert.match(pluginGatePatch.reason, /Could not find Chrome plugin gate literal/);
     assert.ok(
       validateReport(report, "upstream-build").some((failure) =>
-        failure.startsWith("linux-chrome-plugin-auto-install: skipped-optional"),
+        failure.startsWith("linux-chrome-plugin-auto-install: failed-required"),
       ),
     );
   } finally {
@@ -1533,7 +1533,7 @@ test("fails hard when the Computer Use gate is recognizable but unpatchable", ()
   );
 });
 
-test("reports missing required Computer Use plugin gate as upstream validation failure", () => {
+test("reports missing required Computer Use plugin gate as required upstream validation failure", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-patch-report-missing-computer-use-"));
   try {
     const buildDir = path.join(tempRoot, ".vite", "build");
@@ -1544,11 +1544,11 @@ test("reports missing required Computer Use plugin gate as upstream validation f
     captureWarns(() => patchExtractedApp(tempRoot, { report }));
 
     const pluginGatePatch = report.patches.find((patch) => patch.name === "linux-computer-use-plugin-gate");
-    assert.equal(pluginGatePatch.status, "skipped-optional");
+    assert.equal(pluginGatePatch.status, "failed-required");
     assert.match(pluginGatePatch.reason, /Could not find Computer Use plugin gate literal/);
     assert.ok(
       validateReport(report, "upstream-build").some((failure) =>
-        failure.startsWith("linux-computer-use-plugin-gate: skipped-optional"),
+        failure.startsWith("linux-computer-use-plugin-gate: failed-required"),
       ),
     );
   } finally {
@@ -2060,7 +2060,54 @@ test("patchExtractedApp records a structured patch report", () => {
   }
 });
 
-test("patch report marks warned asset patches as skipped", () => {
+test("patch report marks missing required webview assets as required failures", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-patch-report-missing-webview-"));
+  try {
+    const buildDir = path.join(tempRoot, ".vite", "build");
+    fs.mkdirSync(buildDir, { recursive: true });
+    fs.writeFileSync(path.join(buildDir, "main.js"), mainBundlePrefix);
+    fs.writeFileSync(path.join(tempRoot, "package.json"), JSON.stringify({ name: "codex" }));
+
+    const report = createPatchReport();
+    captureWarns(() => patchExtractedApp(tempRoot, { report }));
+
+    const sunsetPatch = report.patches.find((patch) => patch.name === "linux-app-sunset-gate");
+    assert.equal(sunsetPatch.status, "failed-required");
+    assert.match(sunsetPatch.reason, /Could not find webview assets directory/);
+    assert.ok(
+      validateReport(report, "upstream-build").some((failure) =>
+        failure.startsWith("linux-app-sunset-gate: failed-required"),
+      ),
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("patch report marks missing required package metadata as required failure", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-patch-report-missing-package-json-"));
+  try {
+    const buildDir = path.join(tempRoot, ".vite", "build");
+    fs.mkdirSync(buildDir, { recursive: true });
+    fs.writeFileSync(path.join(buildDir, "main.js"), mainBundlePrefix);
+
+    const report = createPatchReport();
+    captureWarns(() => patchExtractedApp(tempRoot, { report }));
+
+    const packagePatch = report.patches.find((patch) => patch.name === "package-desktop-name");
+    assert.equal(packagePatch.status, "failed-required");
+    assert.match(packagePatch.reason, /package\.json missing or unreadable/);
+    assert.ok(
+      validateReport(report, "upstream-build").some((failure) =>
+        failure.startsWith("package-desktop-name: failed-required"),
+      ),
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("patch report marks warned asset patches as required failures", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-patch-report-warned-asset-"));
   try {
     const assetsDir = path.join(tempRoot, "webview", "assets");
@@ -2071,11 +2118,11 @@ test("patch report marks warned asset patches as skipped", () => {
     captureWarns(() => patchExtractedApp(tempRoot, { report }));
 
     const sunsetPatch = report.patches.find((patch) => patch.name === "linux-app-sunset-gate");
-    assert.equal(sunsetPatch.status, "skipped-optional");
+    assert.equal(sunsetPatch.status, "failed-required");
     assert.match(sunsetPatch.reason, /Could not find app sunset gate needle/);
     assert.ok(
       validateReport(report, "upstream-build").some((failure) =>
-        failure.startsWith("linux-app-sunset-gate: skipped-optional"),
+        failure.startsWith("linux-app-sunset-gate: failed-required"),
       ),
     );
   } finally {
