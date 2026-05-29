@@ -97,6 +97,9 @@ fn effective_auto_install(config: &RuntimeConfig) -> bool {
 
 fn sync_runtime_state(config: &RuntimeConfig, state: &mut PersistedState) {
     state.auto_install_on_app_exit = effective_auto_install(config);
+    if state.status != UpdateStatus::WaitingForAppExit {
+        state.waiting_for_app_exit_auto_install = false;
+    }
     state.installed_version = install::installed_package_version();
 }
 
@@ -145,6 +148,19 @@ fn set_status(
     status: UpdateStatus,
 ) -> Result<()> {
     state.status = status;
+    if state.status != UpdateStatus::WaitingForAppExit {
+        state.waiting_for_app_exit_auto_install = false;
+    }
+    persist_state(paths, state)
+}
+
+fn set_waiting_for_app_exit(
+    state: &mut PersistedState,
+    paths: &RuntimePaths,
+    auto_install: bool,
+) -> Result<()> {
+    state.waiting_for_app_exit_auto_install = auto_install;
+    state.status = UpdateStatus::WaitingForAppExit;
     persist_state(paths, state)
 }
 
@@ -697,7 +713,7 @@ async fn reconcile_pending_install(
 
             if state.auto_install_on_app_exit && liveness::is_app_running(config)? {
                 clear_install_auth_required_event(state, paths)?;
-                set_status(state, paths, UpdateStatus::WaitingForAppExit)?;
+                set_waiting_for_app_exit(state, paths, true)?;
                 maybe_notify(
                     state,
                     paths,
@@ -725,6 +741,11 @@ async fn reconcile_pending_install(
                         package_path.display()
                     ),
                 )?;
+                return Ok(());
+            }
+
+            if state.waiting_for_app_exit_auto_install && !state.auto_install_on_app_exit {
+                set_status(state, paths, UpdateStatus::ReadyToInstall)?;
                 return Ok(());
             }
 
@@ -823,7 +844,7 @@ async fn run_install_ready(
 
     if liveness::is_app_running(config)? {
         clear_install_auth_required_event(state, paths)?;
-        set_status(state, paths, UpdateStatus::WaitingForAppExit)?;
+        set_waiting_for_app_exit(state, paths, false)?;
         maybe_send_notification(
             config.notifications,
             "Codex Desktop update ready",
@@ -834,6 +855,7 @@ async fn run_install_ready(
     }
 
     clear_install_auth_required_event(state, paths)?;
+    state.waiting_for_app_exit_auto_install = false;
     trigger_install(state, paths, &config.workspace_root, &package_path).await
 }
 
@@ -858,6 +880,7 @@ fn complete_pending_install_if_already_installed(
         installed_version_matches_candidate(&state.installed_version, &candidate_version);
 
     state.status = UpdateStatus::Installed;
+    state.waiting_for_app_exit_auto_install = false;
     state.candidate_version = None;
     if !candidate_is_installed {
         state.artifact_paths.package_path = None;
@@ -882,6 +905,7 @@ fn recover_interrupted_install(state: &mut PersistedState, paths: &RuntimePaths)
             installed_version_matches_candidate(&state.installed_version, &candidate_version);
 
         state.status = UpdateStatus::Installed;
+        state.waiting_for_app_exit_auto_install = false;
         state.candidate_version = None;
         if !candidate_is_installed {
             state.artifact_paths.package_path = None;
@@ -916,6 +940,7 @@ fn recover_interrupted_install(state: &mut PersistedState, paths: &RuntimePaths)
     }
 
     state.status = UpdateStatus::ReadyToInstall;
+    state.waiting_for_app_exit_auto_install = false;
     state.error_message =
         Some("Previous install attempt was interrupted before completion".to_string());
     cache_cleanup::normalize_artifact_workspace_dir(&paths.cache_dir, state);
@@ -1107,6 +1132,7 @@ async fn trigger_install(
     package_path: &Path,
 ) -> Result<()> {
     state.status = UpdateStatus::Installing;
+    state.waiting_for_app_exit_auto_install = false;
     state.error_message = None;
     persist_state(paths, state)?;
 
@@ -1123,6 +1149,7 @@ async fn trigger_install(
 
     if status.success() {
         state.status = UpdateStatus::Installed;
+        state.waiting_for_app_exit_auto_install = false;
         state.installed_version = install::installed_package_version();
         state.candidate_version = None;
         state.rollback_blocked_candidate_version = None;
@@ -1202,6 +1229,7 @@ fn defer_install_until_next_app_exit(
     message: String,
 ) -> Result<()> {
     state.status = UpdateStatus::ReadyToInstall;
+    state.waiting_for_app_exit_auto_install = false;
     state.error_message = Some(message);
 
     if let Some(event_key) = install_auth_required_event_key(state) {
@@ -1578,7 +1606,135 @@ mod tests {
 
         result?;
         assert_eq!(state.status, UpdateStatus::WaitingForAppExit);
+        assert!(state.waiting_for_app_exit_auto_install);
         assert!(!install_auth_retry_is_blocked(&state));
+        Ok(())
+    }
+
+    #[test]
+    fn waiting_for_app_exit_auto_install_cancelled_when_setting_turns_off() -> Result<()> {
+        let _env_guard = crate::test_util::env_lock();
+        let runtime = tokio::runtime::Runtime::new()?;
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
+        };
+        paths.ensure_dirs()?;
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_file = std::env::var_os("CODEX_LINUX_SETTINGS_FILE");
+        std::env::set_var("CODEX_LINUX_SETTINGS_FILE", &settings_path);
+        std::fs::write(
+            &settings_path,
+            r#"{"codex-linux-auto-update-on-exit": false}"#,
+        )?;
+
+        let package_path = temp.path().join("dist/codex.deb");
+        std::fs::create_dir_all(
+            package_path
+                .parent()
+                .expect("package path should have parent"),
+        )?;
+        std::fs::write(&package_path, b"deb")?;
+
+        let config = RuntimeConfig {
+            dmg_url: "https://example.com/Codex.dmg".to_string(),
+            initial_check_delay_seconds: 1,
+            check_interval_hours: 6,
+            auto_install_on_app_exit: true,
+            notifications: false,
+            workspace_root: temp.path().join("cache"),
+            builder_bundle_root: temp.path().join("builder"),
+            app_executable_path: std::env::current_exe()?,
+        };
+
+        let mut state = PersistedState::new(true);
+        state.status = UpdateStatus::WaitingForAppExit;
+        state.waiting_for_app_exit_auto_install = true;
+        state.candidate_version = Some("2999.03.25.010203+deadbeef".to_string());
+        state.artifact_paths.package_path = Some(package_path);
+
+        let result = runtime.block_on(reconcile_pending_install(&config, &mut state, &paths));
+
+        if let Some(value) = previous_settings_file {
+            std::env::set_var("CODEX_LINUX_SETTINGS_FILE", value);
+        } else {
+            std::env::remove_var("CODEX_LINUX_SETTINGS_FILE");
+        }
+
+        result?;
+        assert_eq!(state.status, UpdateStatus::ReadyToInstall);
+        assert!(!state.auto_install_on_app_exit);
+        assert!(!state.waiting_for_app_exit_auto_install);
+        assert_eq!(state.error_message, None);
+        assert!(state.artifact_paths.package_path.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn waiting_for_app_exit_manual_install_survives_auto_toggle_off() -> Result<()> {
+        let _env_guard = crate::test_util::env_lock();
+        let runtime = tokio::runtime::Runtime::new()?;
+        let temp = tempfile::tempdir()?;
+        let paths = RuntimePaths {
+            config_file: temp.path().join("config/config.toml"),
+            state_file: temp.path().join("state/state.json"),
+            log_file: temp.path().join("state/service.log"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            config_dir: temp.path().join("config"),
+        };
+        paths.ensure_dirs()?;
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_file = std::env::var_os("CODEX_LINUX_SETTINGS_FILE");
+        std::env::set_var("CODEX_LINUX_SETTINGS_FILE", &settings_path);
+        std::fs::write(
+            &settings_path,
+            r#"{"codex-linux-auto-update-on-exit": false}"#,
+        )?;
+
+        let package_path = temp.path().join("dist/codex.deb");
+        std::fs::create_dir_all(
+            package_path
+                .parent()
+                .expect("package path should have parent"),
+        )?;
+        std::fs::write(&package_path, b"deb")?;
+
+        let config = RuntimeConfig {
+            dmg_url: "https://example.com/Codex.dmg".to_string(),
+            initial_check_delay_seconds: 1,
+            check_interval_hours: 6,
+            auto_install_on_app_exit: true,
+            notifications: false,
+            workspace_root: temp.path().join("cache"),
+            builder_bundle_root: temp.path().join("builder"),
+            app_executable_path: std::env::current_exe()?,
+        };
+
+        let mut state = PersistedState::new(false);
+        state.status = UpdateStatus::WaitingForAppExit;
+        state.waiting_for_app_exit_auto_install = false;
+        state.candidate_version = Some("2999.03.25.010203+deadbeef".to_string());
+        state.artifact_paths.package_path = Some(package_path);
+
+        let result = runtime.block_on(reconcile_pending_install(&config, &mut state, &paths));
+
+        if let Some(value) = previous_settings_file {
+            std::env::set_var("CODEX_LINUX_SETTINGS_FILE", value);
+        } else {
+            std::env::remove_var("CODEX_LINUX_SETTINGS_FILE");
+        }
+
+        result?;
+        assert_eq!(state.status, UpdateStatus::WaitingForAppExit);
+        assert!(!state.auto_install_on_app_exit);
+        assert!(!state.waiting_for_app_exit_auto_install);
+        assert_eq!(state.error_message, None);
         Ok(())
     }
 
@@ -1683,6 +1839,7 @@ mod tests {
         run_install_ready(&config, &mut state, &paths).await?;
 
         assert_eq!(state.status, UpdateStatus::WaitingForAppExit);
+        assert!(!state.waiting_for_app_exit_auto_install);
         assert!(!install_auth_retry_is_blocked(&state));
         Ok(())
     }
