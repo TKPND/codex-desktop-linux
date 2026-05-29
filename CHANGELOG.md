@@ -16,6 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   `CHANGELOG.md` sections newer than the installed version, and falls back to
   git commit subjects. Packaged frozen bundles without a git checkout degrade
   gracefully (no wrapper tracking; updates arrive via a normal package upgrade).
+- A separate in-app "Update" button for wrapper updates, shipped as the opt-in
+  `codex-wrapper-updater` Linux feature (distinct from the upstream DMG Sparkle
+  button). It is invisible unless a wrapper update is pending, detects updates
+  with a git-only shallow fetch that works for both packaged and user-local
+  installs (no GitHub API, no `gh`/`curl`), and shows the changelog as a tooltip.
+  Clicking it applies the update after the app exits, then relaunches into the
+  freshly built version; the button hides again once the install is aligned with
+  upstream. Enable wrapper tracking from the "Check for Codex Desktop Linux
+  updates" toggle in the Keybinds → Updates settings section
+  (`codex-linux-wrapper-updates-enabled`).
 - Launcher rendering mode `CODEX_LINUX_RENDERING_MODE=wayland-gpu`, which
   forces native Wayland with GPU compositing enabled and skips forced renderer
   accessibility by default for Wayland desktops where XWayland or software
