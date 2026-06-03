@@ -41,6 +41,17 @@ make install-native
 `Codex.dmg`, builds `codex-app/`, packages it for your distro, and installs the
 newest artifact from `dist/`.
 
+If you are installing dependencies manually on Fedora:
+
+```bash
+# Fedora 41+
+sudo dnf install python3 7zip curl unzip rpm-build @development-tools
+
+# Fedora < 41
+sudo dnf install python3 p7zip p7zip-plugins curl unzip rpm-build
+sudo dnf groupinstall 'Development Tools'
+```
+
 For a guided first-run checklist and optional feature picker:
 
 ```bash
