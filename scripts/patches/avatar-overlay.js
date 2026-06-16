@@ -161,7 +161,8 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
     patchedSource = patchedSource.replace(startDragRegex, startDragPatch);
   } else if (
     patchedSource.includes("avatar-overlay") &&
-    !patchedSource.includes(startDragPatch)
+    !patchedSource.includes(startDragPatch) &&
+    patchedSource.includes("displayBounds:")
   ) {
     recordStrategy("avatar-start-drag", "none");
     console.warn(
@@ -179,7 +180,8 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
   } else if (patchedSource.includes(endDragPatch)) {
     recordStrategy("avatar-end-drag", "already-applied");
   } else if (
-    patchedSource.includes("avatar-overlay")
+    patchedSource.includes("avatar-overlay") &&
+    patchedSource.includes("reclampWindowToVisibleDisplay(")
   ) {
     recordStrategy("avatar-end-drag", "none");
     console.warn(
@@ -261,7 +263,8 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
       "this.setWindowBounds(e,$1.windowBounds$2),this.sendLayoutToRenderer(e),process.platform===`linux`&&this.applyPointerInteractivityPolicy()}getLayout(e){",
     );
   } else if (
-    patchedSource.includes("avatar-overlay")
+    patchedSource.includes("avatar-overlay") &&
+    patchedSource.includes("sendLayoutToRenderer(")
   ) {
     recordStrategy("avatar-apply-layout", "none");
     console.warn(
@@ -281,7 +284,10 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
       currentShowWindowRegex,
       "e.moveTop(),e.showInactive(),process.platform===`linux`&&this.codexLinuxApplyAvatarCompositorHints(e),process.platform===`linux`&&this.applyPointerInteractivityPolicy(),$1",
     );
-  } else if (patchedSource.includes("avatar-overlay")) {
+  } else if (
+    patchedSource.includes("avatar-overlay") &&
+    patchedSource.includes("showWindowIfReady(")
+  ) {
     recordStrategy("avatar-show-window", "none");
     console.warn(
       "WARN: Could not find avatar overlay show window — skipping Linux avatar overlay show sync patch",
