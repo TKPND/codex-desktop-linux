@@ -39,6 +39,7 @@ const {
   applyLinuxAppUpdaterBridgePatch,
   applyLinuxAppUpdaterMenuPatch,
   applyLinuxAboutDialogPatch,
+  applyLinuxApplicationMenuPatch,
   applyLinuxBuildInfoTrayPatch,
   applyLinuxExplicitIpcQuitPatch,
   applyLinuxExplicitQuitPromptBypassPatch,
@@ -757,6 +758,7 @@ test("default core patch descriptors are grouped and unique", () => {
     "linux-app-server-backfill-wait",
     "linux-skills-list-dedupe",
     "linux-config-write-version-conflict",
+    "linux-application-menu",
     "opaque-window-default-general-settings",
     "opaque-window-default-webview-index",
     "opaque-window-default-resolved-theme",
@@ -2223,6 +2225,26 @@ test("recognizes the Linux removeMenu snippet as already applied", () => {
 
   assert.equal(patched, source);
   assert.equal((patched.match(/process\.platform===`linux`&&k\.removeMenu\(\),/g) ?? []).length, 1);
+});
+
+test("suppresses the global application menu on Linux", () => {
+  const source =
+    "let $e=[{role:`help`,submenu:[]}],et=n.Menu.buildFromTemplate($e);n.Menu.setApplicationMenu(et);";
+  const patched = applyPatchTwice(applyLinuxApplicationMenuPatch, source);
+
+  assert.equal(
+    patched,
+    "let $e=[{role:`help`,submenu:[]}],et=n.Menu.buildFromTemplate($e);n.Menu.setApplicationMenu(process.platform===`linux`?null:et);",
+  );
+});
+
+test("recognizes an already Linux-suppressed application menu", () => {
+  const source =
+    "let et=n.Menu.buildFromTemplate($e);n.Menu.setApplicationMenu(process.platform===`linux`?null:et);";
+
+  const patched = applyPatchTwice(applyLinuxApplicationMenuPatch, source);
+
+  assert.equal(patched, source);
 });
 
 test("recognizes already-applied Linux opaque background patch", () => {

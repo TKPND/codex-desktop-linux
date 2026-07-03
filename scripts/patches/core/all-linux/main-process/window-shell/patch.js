@@ -2,6 +2,7 @@
 
 const {
   applyLinuxAboutDialogPatch,
+  applyLinuxApplicationMenuPatch,
   applyLinuxWindowOptionsPatch,
   applyLinuxNativeTitlebarPatch,
   applyLinuxMenuPatch,
@@ -40,6 +41,13 @@ module.exports = [
     order: 60,
     ciPolicy: "optional",
     apply: applyLinuxMenuPatch,
+  },
+  {
+    id: "linux-application-menu",
+    phase: "main-bundle",
+    order: 65,
+    ciPolicy: "optional",
+    apply: applyLinuxApplicationMenuPatch,
   },
   {
     id: "linux-native-titlebar",
