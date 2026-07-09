@@ -11,53 +11,11 @@ const {
   readDirectoryNames,
 } = require("../lib/assets.js");
 
-function hasChromePluginLiteral(source) {
-  return /(?:`chrome`|"chrome"|'chrome')/.test(source);
-}
-
-function isChromeNameExpr(nameExpr, chromeNameVar) {
-  return /^(?:`chrome`|"chrome"|'chrome')$/.test(nameExpr) ||
-    nameExpr === chromeNameVar;
-}
-
-function chromeNamePatterns(chromeNameVar) {
-  const namePatterns = [String.raw`\`chrome\``, "\"chrome\"", "'chrome'"];
-  if (chromeNameVar != null) {
-    namePatterns.push(chromeNameVar);
-  }
-  return namePatterns;
-}
-
-function hasLinuxChromeAvailability(source) {
-  return source.includes("process.platform===`linux`");
-}
-
-function hasChromeAutoInstallWithLinuxAvailability(source, chromeNameVar) {
-  const namePatterns = chromeNamePatterns(chromeNameVar);
-  return new RegExp(
-    String.raw`\{(?=[^{}]*installWhenMissing:!0)(?=[^{}]*name:(?:${namePatterns.join("|")}))(?=[^{}]*process\.platform===\`linux\`)[^{}]*(?:isEnabled|isAvailable):[^{}]*\}`,
-  ).test(source);
-}
-
 function applyLinuxChromePluginAutoInstallPatch(currentSource) {
-  if (!hasChromePluginLiteral(currentSource)) {
-    console.warn(
-      "WARN: Could not find Chrome plugin gate literal — skipping Linux Chrome plugin auto-install patch",
-    );
-    return currentSource;
-  }
-
-  const chromeNameVar = currentSource.match(/([A-Za-z_$][\w$]*)=(?:`chrome`|"chrome"|'chrome')/)?.[1] ?? null;
-  const nameExpressionPattern = String.raw`(?:[A-Za-z_$][\w$]*|` +
-    String.raw`\`chrome\`|"chrome"|'chrome')`;
   const gateRegex =
-    new RegExp(
-      String.raw`\{([^{}]*?)(installWhenMissing:!0,)?name:(${nameExpressionPattern}),([^{}]*?)(isEnabled|isAvailable):\(\{([^}]*)\}\)=>([^{}]*?externalBrowserUseAllowed[^{}]*?)(,migrate:[A-Za-z_$][\w$]*)?\}`,
-      "g",
-    );
+    /\{([^{}]*?)(installWhenMissing:!0,)?name:([A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*),([^{}]*?syncInstallStateWithChromeExtension:!0,isAvailable:\(\{buildFlavor:([A-Za-z_$][\w$]*),features:([A-Za-z_$][\w$]*)\}\)=>)((?:process\.platform===`linux`\|\|\()?\6\.externalBrowserUseAllowed&&[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\(\5\)\)?)\}/g;
 
   let sawChromeGate = false;
-  let sawAlreadyInstalledGate = false;
   const patched = currentSource.replace(
     gateRegex,
     (
@@ -66,21 +24,15 @@ function applyLinuxChromePluginAutoInstallPatch(currentSource) {
       installWhenMissing,
       nameExpr,
       middleFields,
-      availabilityProp,
-      paramsText,
+      _buildFlavorVar,
+      _featuresVar,
       expression,
-      migrateSuffix = "",
     ) => {
-      if (!isChromeNameExpr(nameExpr, chromeNameVar)) {
-        return gateSource;
-      }
-
       sawChromeGate = true;
       const hasInstallWhenMissing = installWhenMissing != null ||
         prefix.includes("installWhenMissing:!0");
-      const hasLinuxAvailability = hasLinuxChromeAvailability(expression);
+      const hasLinuxAvailability = expression.startsWith("process.platform===`linux`||(");
       if (hasInstallWhenMissing && hasLinuxAvailability) {
-        sawAlreadyInstalledGate = true;
         return gateSource;
       }
 
@@ -88,16 +40,12 @@ function applyLinuxChromePluginAutoInstallPatch(currentSource) {
       const availabilityExpression = hasLinuxAvailability
         ? expression
         : `process.platform===\`linux\`||(${expression})`;
-      return `{${prefix}${installWhenMissingField}name:${nameExpr},${middleFields}${availabilityProp}:({${paramsText}})=>${availabilityExpression}${migrateSuffix}}`;
+      return `{${prefix}${installWhenMissingField}name:${nameExpr},${middleFields}${availabilityExpression}}`;
     },
   );
 
-  if (patched !== currentSource || (sawChromeGate && sawAlreadyInstalledGate)) {
+  if (sawChromeGate) {
     return patched;
-  }
-
-  if (hasChromeAutoInstallWithLinuxAvailability(currentSource, chromeNameVar)) {
-    return currentSource;
   }
 
   if (currentSource.includes("externalBrowserUseAllowed")) {

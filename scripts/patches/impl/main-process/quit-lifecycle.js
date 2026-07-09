@@ -1,50 +1,25 @@
 "use strict";
 
 function applyLinuxQuitGuardPatch(currentSource) {
-  let patchedSource = currentSource;
-
-  const quitGuardNeedle = "let n=require(`electron`),i=require(`node:path`),o=require(`node:fs`);";
   const quitGuardSuffix =
     "let codexLinuxQuitInProgress=!1,codexLinuxExplicitQuitApproved=!1,codexLinuxExplicitQuitDrainTimeoutMs=3e3,codexLinuxMarkQuitInProgress=()=>{codexLinuxQuitInProgress=!0},codexLinuxPrepareForExplicitQuit=()=>{codexLinuxExplicitQuitApproved=!0,codexLinuxMarkQuitInProgress()},codexLinuxShouldBypassQuitPrompt=()=>codexLinuxExplicitQuitApproved===!0,codexLinuxIsQuitInProgress=()=>codexLinuxQuitInProgress===!0;";
-  const quitGuardPatch = `${quitGuardNeedle}${quitGuardSuffix}`;
 
-  if (patchedSource.includes("codexLinuxExplicitQuitApproved=!1")) {
-    return patchedSource;
+  if (currentSource.includes("codexLinuxExplicitQuitApproved=!1")) {
+    return currentSource;
   }
 
-  if (patchedSource.includes(quitGuardNeedle)) {
-    return patchedSource.replace(quitGuardNeedle, quitGuardPatch);
+  const modulePreludeRegex =
+    /let ([A-Za-z_$][\w$]*)=require\(`node:url`\),([A-Za-z_$][\w$]*)=require\(`electron`\);\2=[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\(\2\);/;
+  const modulePreludeMatch = currentSource.match(modulePreludeRegex);
+  if (modulePreludeMatch != null) {
+    return currentSource.replace(modulePreludeRegex, `${modulePreludeMatch[0]}${quitGuardSuffix}`);
   }
 
-  const currentCommaQuitGuardNeedle =
-    /let ([A-Za-z_$][\w$]*)=(?:codexLinuxPatchExternalOpen\()?require\(`electron`\)(?:\))?,([A-Za-z_$][\w$]*)=require\(`node:path`\),([A-Za-z_$][\w$]*)=require\(`node:fs`\);/;
-  const currentCommaQuitGuardMatch = patchedSource.match(currentCommaQuitGuardNeedle);
-  if (currentCommaQuitGuardMatch != null) {
-    const matchedPrefix = currentCommaQuitGuardMatch[0];
-    return patchedSource.replace(matchedPrefix, `${matchedPrefix}${quitGuardSuffix}`);
-  }
-
-  const currentBundlerQuitGuardNeedle =
-    /let ([A-Za-z_$][\w$]*)=(?:codexLinuxPatchExternalOpen\()?require\(`electron`\)(?:\))?;(?:\1=[^;]+;)?[\s\S]{0,500}?(?:let|,)\s*([A-Za-z_$][\w$]*)=require\(`node:path`\);(?:\2=[^;]+;)?[\s\S]{0,500}?(?:let|,)\s*([A-Za-z_$][\w$]*)=require\(`node:fs`\);(?:\3=[^;]+;)?/;
-  const currentBundlerQuitGuardMatch = patchedSource.match(currentBundlerQuitGuardNeedle);
-  if (currentBundlerQuitGuardMatch != null) {
-    const matchedPrefix = currentBundlerQuitGuardMatch[0];
-    return patchedSource.replace(matchedPrefix, `${matchedPrefix}${quitGuardSuffix}`);
-  }
-
-  const splitQuitGuardNeedle =
-    /let ([A-Za-z_$][\w$]*)=require\(`electron`\);(?:\1=[^;]+;)?let ([A-Za-z_$][\w$]*)=require\(`node:path`\);(?:\2=[^;]+;)?let ([A-Za-z_$][\w$]*)=require\(`node:fs`\);(?:\3=[^;]+;)?/;
-  const splitQuitGuardMatch = patchedSource.match(splitQuitGuardNeedle);
-  if (splitQuitGuardMatch != null) {
-    const matchedPrefix = splitQuitGuardMatch[0];
-    return patchedSource.replace(matchedPrefix, `${matchedPrefix}${quitGuardSuffix}`);
-  }
-
-  if (patchedSource.includes("require(`electron`)") && patchedSource.includes("require(`node:path`)")) {
+  if (currentSource.includes("require(`electron`)")) {
     console.warn("WARN: Could not find Linux quit guard insertion point — skipping explicit quit-state patch");
   }
 
-  return patchedSource;
+  return currentSource;
 }
 
 function linuxExplicitQuitExpression() {

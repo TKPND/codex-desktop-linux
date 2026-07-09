@@ -25,7 +25,7 @@ const {
 function projectBundleFixture() {
   return [
     "function row(){let j=Pn(`group/folder-row group relative flex h-[var(--height-token-row)] text-sm text-token-foreground`);",
-    "let V=(0,Iy.jsx)(`span`,{className:`min-w-0 truncate pr-1`,children:p});return [j,V]}",
+    "let V=(0,Iy.jsx)(`span`,{className:`text-fade-truncate pr-1`,children:p});return [j,V]}",
   ].join("");
 }
 
@@ -82,6 +82,10 @@ test("ui-tweaks is discoverable and disabled until listed in features.json", () 
 
 test("sidebar project descriptor targets only the current project sidebar asset", () => {
   assert.match(
+    "app-initial~app-main~page-BF1QkwFT.js",
+    PROJECTS_SIDEBAR_ASSET_PATTERN,
+  );
+  assert.doesNotMatch(
     "app-initial~app-main~automations-page-BcHjEK7e.js",
     PROJECTS_SIDEBAR_ASSET_PATTERN,
   );

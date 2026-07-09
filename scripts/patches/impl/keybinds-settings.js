@@ -1009,13 +1009,10 @@ function applyKeybindsSettingsIndexPatch(currentSource) {
 }
 
 function isSettingsRouteBundleSource(currentSource) {
-  // Only treat a chunk as the route map when general-settings is wired to a lazy
-  // page component (or the Linux desktop route is already present). The previous
-  // `"general-settings":ID,...,"keyboard-shortcuts":ID` heuristic also matched the
-  // icon map (slug -> SVG component), which caused the route patch to inject the
-  // settings page component as a navigation icon and render a broken nav entry.
   return currentSource.includes(linuxDesktopSettingsAsset)
-    || /"general-settings":\(0,[A-Za-z_$][\w$]*\.lazy\)\(\(\)=>[A-Za-z_$][\w$]*\(/.test(currentSource);
+    || /"general-settings":[A-Za-z_$][\w$]*\(async\(\)=>\(await [A-Za-z_$][\w$]*\(async\(\)=>\{let\{GeneralSettings:[A-Za-z_$][\w$]*\}=await import\(`/u.test(
+      currentSource,
+    );
 }
 
 function isSettingsSectionsMetadataBundleSource(currentSource) {
@@ -1048,32 +1045,16 @@ function applyLinuxDesktopSettingsRoutePatch(currentSource) {
   let patchedSource = currentSource;
 
   if (!patchedSource.includes(`${linuxDesktopSettingsAsset}`)) {
-    // The route map is `var X={...}` in older bundles but a bare `X={...}` inside an
-    // IIFE body (`...,X={"general-settings":(0,Y.lazy)(...)`) in newer split chunks,
-    // so the `var` keyword is optional and preserved when present.
-    const routePattern = /(var )?([A-Za-z_$][\w$]*)=\{([^;]*?)"general-settings":(?=\(0,([A-Za-z_$][\w$]*)\.lazy\)\(\(\)=>([A-Za-z_$][\w$]*)\()/;
-    const directRoutePattern = /((?:var )?[A-Za-z_$][\w$]*=\{)([^;}]*?)"general-settings":(?=[A-Za-z_$][\w$]*,)/;
-    // A navigation/icon bundle (it carries the `slugs:[`general-settings`,...]`
-    // group array) also exposes a `{"general-settings":ID,...}` map, but those IDs
-    // are SVG icon components, not route targets. Never apply the direct-route
-    // fallback there or the page component is injected as a nav icon.
-    const isNavigationBundle = /slugs:\[`general-settings`/.test(patchedSource);
-    if (routePattern.test(patchedSource)) {
-      patchedSource = patchedSource.replace(
-        routePattern,
-        (_match, varKeyword, routeMap, beforeGeneralSettings, lazyAlias, preloadAlias) =>
-          `${varKeyword ?? ""}${routeMap}={"linux-desktop":(0,${lazyAlias}.lazy)(()=>${preloadAlias}(()=>import(\`./${linuxDesktopSettingsAsset}\`),[],import.meta.url)),${beforeGeneralSettings}"general-settings":`,
-      );
-    } else if (!isNavigationBundle && directRoutePattern.test(patchedSource)) {
-      patchedSource = `import{LinuxDesktopSettings as codexLinuxDesktopSettings}from"./${linuxDesktopSettingsAsset}";${patchedSource}`;
-      patchedSource = patchedSource.replace(
-        directRoutePattern,
-        (_match, prefix, beforeGeneralSettings) =>
-          `${prefix}"linux-desktop":codexLinuxDesktopSettings,${beforeGeneralSettings}"general-settings":`,
-      );
-    } else {
+    const routePattern =
+      /((?:var )?[A-Za-z_$][\w$]*=\{)(?="general-settings":([A-Za-z_$][\w$]*)\(async\(\)=>\(await ([A-Za-z_$][\w$]*)\(async\(\)=>\{let\{GeneralSettings:[A-Za-z_$][\w$]*\}=await import\(`)/u;
+    if (!routePattern.test(patchedSource)) {
       throw new Error("Required Keybinds settings patch failed: could not add Linux desktop route");
     }
+    patchedSource = patchedSource.replace(
+      routePattern,
+      (_match, routeMapPrefix, routeLoader, preloadAlias) =>
+        `${routeMapPrefix}"linux-desktop":${routeLoader}(async()=>(await ${preloadAlias}(async()=>{let{LinuxDesktopSettings:e}=await import(\`./${linuxDesktopSettingsAsset}\`);return{LinuxDesktopSettings:e}},[],import.meta.url)).LinuxDesktopSettings),`,
+    );
   }
 
   return patchedSource;

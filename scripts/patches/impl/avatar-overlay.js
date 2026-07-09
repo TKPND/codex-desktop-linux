@@ -170,22 +170,20 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
     `codexLinuxIsAvatarShapeBackend(){if(process.platform!==\`linux\`)return!1;let e=\`\`;try{e=${electronVar}.app.commandLine.getSwitchValue(\`ozone-platform\`)}catch{}return e===\`x11\`||e===\`\`&&!process.env.WAYLAND_DISPLAY}`;
 
   const interactivityNeedle =
-    "applyPointerInteractivityPolicy(){let e=this.window;if(e==null||e.isDestroyed()){this.mousePassthroughEnabled=!1;return}let t=!this.pointerInteractive;if(this.mousePassthroughEnabled!==t){if(this.mousePassthroughEnabled=t,t){e.setIgnoreMouseEvents(!0,{forward:!0});return}e.setIgnoreMouseEvents(!1),this.refreshCursorAtCurrentMousePosition(e)}}refreshCursorAtCurrentMousePosition(e){";
-  const previousShapeInteractivityNeedle =
+    "applyPointerInteractivityPolicy(){let e=this.window;if(e==null||e.isDestroyed()){this.mousePassthroughEnabled=!1;return}let t=!this.pointerInteractive;if(this.mousePassthroughEnabled!==t){if(this.mousePassthroughEnabled=t,t){e.setIgnoreMouseEvents(!0,{forward:!0});return}e.setIgnoreMouseEvents(!1),this.refreshCursorAtCurrentMousePosition(e)}}";
+  const interactivityTemplate =
     "applyPointerInteractivityPolicy(){let e=this.window;if(e==null||e.isDestroyed()){this.mousePassthroughEnabled=!1,this.codexLinuxStopAvatarPassthroughRecovery();return}if(process.platform===`linux`&&typeof e.setShape==`function`){this.codexLinuxStopAvatarPassthroughRecovery(),this.mousePassthroughEnabled&&(this.mousePassthroughEnabled=!1,e.setIgnoreMouseEvents(!1));if(this.codexLinuxApplyAvatarInputShape(e))return}process.platform===`linux`&&(this.codexLinuxStartAvatarPassthroughRecovery(),this.codexLinuxSyncAvatarPointerInteractivity(e));let t=!this.pointerInteractive;this.dragState!=null&&(t=!1);if(this.mousePassthroughEnabled!==t){if(this.mousePassthroughEnabled=t,t){e.setIgnoreMouseEvents(!0,{forward:!0});return}e.setIgnoreMouseEvents(!1),this.refreshCursorAtCurrentMousePosition(e)}}codexLinuxStopAvatarPassthroughRecovery(){this.codexLinuxAvatarPassthroughRecoveryTimer!=null&&(clearInterval(this.codexLinuxAvatarPassthroughRecoveryTimer),this.codexLinuxAvatarPassthroughRecoveryTimer=null)}codexLinuxBuildAvatarInputShape(e){let t=this.layout;if(t==null)return null;if(this.dragState!=null){let t=e.getContentBounds();return[{x:0,y:0,width:t.width,height:t.height}]}let r=e.getContentBounds(),i=e=>{if(e==null)return null;let t=Math.max(0,e.left),n=Math.max(0,e.top),i=Math.min(r.width,e.left+e.width)-t,a=Math.min(r.height,e.top+e.height)-n;return i<=0||a<=0?null:{x:t,y:n,width:i,height:a}};return[i(t.mascot),i(t.tray)].filter(Boolean)}codexLinuxApplyAvatarInputShape(e){if(process.platform!==`linux`||e==null||e.isDestroyed()||typeof e.setShape!=`function`)return!1;let t=this.codexLinuxBuildAvatarInputShape(e);if(t==null)return!1;let n=JSON.stringify(t);if(this.codexLinuxAvatarInputShapeKey===n)return!0;try{e.setShape(t),this.codexLinuxAvatarInputShapeKey=n;return!0}catch{this.codexLinuxAvatarInputShapeKey=null;return!1}}codexLinuxStartAvatarPassthroughRecovery(){if(process.platform!==`linux`||this.codexLinuxAvatarPassthroughRecoveryTimer!=null)return;this.codexLinuxAvatarPassthroughRecoveryTimer=setInterval(()=>{let e=this.window;if(e==null||e.isDestroyed()||!e.isVisible()){this.codexLinuxStopAvatarPassthroughRecovery();return}this.codexLinuxSyncAvatarPointerInteractivity(e)&&this.applyPointerInteractivityPolicy()},32),this.codexLinuxAvatarPassthroughRecoveryTimer.unref?.()}codexLinuxSyncAvatarPointerInteractivity(e){if(process.platform!==`linux`||e==null||e.isDestroyed())return!1;if(this.dragState!=null){if(this.pointerInteractive)return!1;return this.pointerInteractive=!0,!0}let t;try{t=this.codexLinuxIsCursorInAvatarInteractiveRegion(e)}catch{t=!0}return this.pointerInteractive===t?!1:(this.pointerInteractive=t,!0)}codexLinuxIsCursorInAvatarInteractiveRegion(e){let t=this.layout;if(t==null)return!1;let r=n.screen.getCursorScreenPoint(),i=e.getContentBounds(),a=r.x-i.x,o=r.y-i.y;if(a<0||o<0||a>i.width||o>i.height)return!1;let s=e=>e!=null&&a>=e.left&&a<=e.left+e.width&&o>=e.top&&o<=e.top+e.height;return s(t.mascot)||s(t.tray)}refreshCursorAtCurrentMousePosition(e){";
-  const previousSetShapePolicyPatch =
+  const templateSetShapePolicy =
     "if(process.platform===`linux`&&typeof e.setShape==`function`){this.codexLinuxStopAvatarPassthroughRecovery(),this.mousePassthroughEnabled&&(this.mousePassthroughEnabled=!1,e.setIgnoreMouseEvents(!1));if(this.codexLinuxApplyAvatarInputShape(e))return}";
   const setShapePolicyPatch =
     "if(this.codexLinuxIsAvatarShapeBackend()&&typeof e.setShape==`function`){this.codexLinuxStartAvatarPassthroughRecovery(),this.mousePassthroughEnabled&&(this.mousePassthroughEnabled=!1,e.setIgnoreMouseEvents(!1));if(this.codexLinuxApplyAvatarInputShape(e))return}";
-  // previousShapeInteractivityNeedle embeds the older Stop-based policy block;
-  // finalize it at build time so the replaceAll below only fires for trees
-  // patched by an older wrapper, not on every fresh DMG.
-  const interactivityPatch = withElectronAlias(previousShapeInteractivityNeedle)
+  const interactivityPatch = withElectronAlias(interactivityTemplate)
     .replace(
       "codexLinuxStopAvatarPassthroughRecovery(){",
       `${i3SessionMethod}${compositorHintsMethod}${shapeBackendMethod}codexLinuxStopAvatarPassthroughRecovery(){`,
     )
-    .replaceAll(previousSetShapePolicyPatch, setShapePolicyPatch);
+    .replaceAll(templateSetShapePolicy, setShapePolicyPatch)
+    .replace(/refreshCursorAtCurrentMousePosition\(e\)\{$/, "");
 
   if (!patchedSource.includes("codexLinuxIsI3Session")) {
     if (patchedSource.includes(interactivityNeedle)) {
@@ -203,24 +201,6 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
     }
   } else {
     recordStrategy("avatar-interactivity", "already-applied");
-  }
-  if (
-    patchedSource.includes("codexLinuxIsI3Session") &&
-    !patchedSource.includes("codexLinuxApplyAvatarCompositorHints")
-  ) {
-    patchedSource = patchedSource.replace(
-      `${i3SessionMethod}codexLinuxStopAvatarPassthroughRecovery(){`,
-      `${i3SessionMethod}${compositorHintsMethod}codexLinuxStopAvatarPassthroughRecovery(){`,
-    );
-  }
-  if (
-    patchedSource.includes("codexLinuxIsI3Session") &&
-    !patchedSource.includes("codexLinuxIsAvatarShapeBackend")
-  ) {
-    patchedSource = patchedSource.replace(
-      "codexLinuxStopAvatarPassthroughRecovery(){",
-      `${shapeBackendMethod}codexLinuxStopAvatarPassthroughRecovery(){`,
-    );
   }
   patchedSource = upgradeAvatarOverlayInjectedMethods(patchedSource, electronVar);
   const beforeFocusablePatch = patchedSource;
@@ -262,17 +242,17 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
     /endDrag\([A-Za-z_$][\w$]*(?:,[A-Za-z_$][\w$]*)?\)\{/,
   );
   if (endDragMethod?.text.includes(
-    "this.reclampWindowToVisibleDisplay({shouldPersist:!0}),process.platform===`linux`&&this.applyPointerInteractivityPolicy()",
+    "this.reclampWindowToVisibleDisplay({shouldPersist:!0});process.platform===`linux`&&this.applyPointerInteractivityPolicy()",
   )) {
     recordStrategy("avatar-end-drag", "already-applied");
-  } else if (endDragMethod?.text.includes("this.dragState=null,this.reclampWindowToVisibleDisplay({shouldPersist:!0})")) {
+  } else if (endDragMethod?.text.includes(":this.reclampWindowToVisibleDisplay({shouldPersist:!0});")) {
     recordStrategy("avatar-end-drag", "upstream-method");
     patchedSource = replaceAvatarMethodText(
       patchedSource,
       endDragMethod,
       endDragMethod.text.replace(
-        /this\.dragState=null,this\.reclampWindowToVisibleDisplay\(\{shouldPersist:!0\}\)/,
-        "this.dragState=null,this.reclampWindowToVisibleDisplay({shouldPersist:!0}),process.platform===`linux`&&this.applyPointerInteractivityPolicy()",
+        /:this\.reclampWindowToVisibleDisplay\(\{shouldPersist:!0\}\);/,
+        ":this.reclampWindowToVisibleDisplay({shouldPersist:!0});process.platform===`linux`&&this.applyPointerInteractivityPolicy();",
       ),
     );
   } else if (patchedSource.includes("avatar-overlay")) {
@@ -284,7 +264,7 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
 
   const setElementSizeMethod = findAvatarOverlayMethod(
     patchedSource,
-    /setElementSize\([A-Za-z_$][\w$]*,\{(?:[^{}]*,)?mascot:[A-Za-z_$][\w$]*,tray:[A-Za-z_$][\w$]*(?:,[^{}]*)?\}\)\{/,
+    /setElementSize\([A-Za-z_$][\w$]*,\{[^{}]*mascot:[A-Za-z_$][\w$]*[^{}]*tray:[A-Za-z_$][\w$]*[^{}]*\}\)\{/,
   );
   if (setElementSizeMethod != null) {
     if (
@@ -322,9 +302,9 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
   }
 
   const i3TrayFallbackRegex =
-    /traySize:this\.traySize\?\?([A-Za-z_$][\w$]*|\([^{};]*?\))\}\);this\.anchor=/;
+    /traySize:this\.traySize\?\?(\(this\.layoutMode===`native`\?[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*\))\}\)\}getLayout\(/;
   const i3TrayFallbackPatch =
-    "traySize:process.platform===`linux`&&typeof this.codexLinuxIsI3Session==`function`&&this.codexLinuxIsI3Session()?this.traySize:this.traySize??$1});this.anchor=";
+    "traySize:process.platform===`linux`&&typeof this.codexLinuxIsI3Session==`function`&&this.codexLinuxIsI3Session()?this.traySize:this.traySize??$1})}getLayout(";
   if (
     !patchedSource.includes(
       "traySize:process.platform===`linux`&&typeof this.codexLinuxIsI3Session==`function`&&this.codexLinuxIsI3Session()",
@@ -353,15 +333,15 @@ function applyLinuxAvatarOverlayMousePassthroughPatch(currentSource) {
     recordStrategy("avatar-apply-layout", "already-applied");
   } else if (
     applyLayoutMethod != null &&
-    /this\.setWindowBounds\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\.windowBounds((?:,[A-Za-z_$][\w$]*)*)\),this\.sendLayoutToRenderer\(\1((?:,[A-Za-z_$][\w$]*)*)\)/.test(applyLayoutMethod.text)
+    /this\.sendLayoutToRenderer\([A-Za-z_$][\w$]*(?:,[A-Za-z_$][\w$]*)?\)/.test(applyLayoutMethod.text)
   ) {
     recordStrategy("avatar-apply-layout", "upstream");
     patchedSource = replaceAvatarMethodText(
       patchedSource,
       applyLayoutMethod,
       applyLayoutMethod.text.replace(
-        /this\.setWindowBounds\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\.windowBounds((?:,[A-Za-z_$][\w$]*)*)\),this\.sendLayoutToRenderer\(\1((?:,[A-Za-z_$][\w$]*)*)\)/,
-        "this.setWindowBounds($1,$2.windowBounds$3),this.sendLayoutToRenderer($1$4),process.platform===`linux`&&this.applyPointerInteractivityPolicy()",
+        /this\.sendLayoutToRenderer\(([A-Za-z_$][\w$]*)(,[A-Za-z_$][\w$]*)?\)/,
+        "this.sendLayoutToRenderer($1$2),process.platform===`linux`&&this.applyPointerInteractivityPolicy()",
       ),
     );
   } else if (
