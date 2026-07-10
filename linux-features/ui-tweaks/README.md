@@ -53,7 +53,11 @@ Each tweak documents its own config keys below.
 Makes the detailed model list the default Codex composer picker view. The model
 rows are rendered inline, so newly available families such as GPT-5.6 Luna,
 Terra, and Sol remain visible without first switching away from the compact
-Power slider or opening a nested Model submenu.
+Power slider or opening a nested Model submenu. The compact GPT-5.6 Power
+slider also derives Sol's positions from the model's `supportedReasoningEfforts`
+after the app filters that list through the reasoning efforts enabled in
+settings. Enabled efforts such as Max therefore appear without maintaining a
+separate hard-coded effort list.
 
 Config keys:
 

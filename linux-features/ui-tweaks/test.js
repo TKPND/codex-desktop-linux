@@ -13,6 +13,7 @@ const {
 } = require("../../scripts/lib/linux-features.js");
 const {
   ADVANCED_MENU_VIEW_PATTERN,
+  DYNAMIC_POWER_EFFORTS_RUNTIME_MARKER,
   GPT_56_ALLOWLIST_MARKER,
   INLINE_MODEL_LIST_RUNTIME_MARKER,
   MODEL_ALLOWLIST_MARKER,
@@ -20,6 +21,7 @@ const {
   MODEL_PICKER_STATE_ASSET_PATTERN,
   SIMPLE_MENU_VIEW_PATTERN,
   applyDefaultAdvancedViewPatch,
+  applyDynamicSupportedReasoningEffortsPatch,
   applyGpt56AllowlistPatch,
   applyInlineModelListPatch,
 } = require("./patches/model-picker-model-list.js");
@@ -65,6 +67,36 @@ function modelPickerMenuBundleFixture() {
     "let we=(0,c6.jsxs)(c6.Fragment,{children:[ye,effort]});",
     "}",
   ].join("");
+}
+
+function modelPickerPowerBundleFixture() {
+  return [
+    "function ARe(e){let t=PRe(FRe,e);if(t.length>=4)return t;let n=PRe(IRe,e);return n.length>=4?n:[]}",
+    "function MRe(e){return e?.flatMap(({displayName:e,model:t,supportedReasoningEfforts:n})=>{let r=e==null?`Custom`:e,i=n.flatMap(({reasoningEffort:e})=>[e]);return(i.length>0?i:[`medium`]).map(e=>({id:`${t}:${e}`,model:t,modelLabel:r,reasoningEffort:e}))})??[]}",
+    "function PRe(e,t){return e.flatMap((e,n)=>t?.some(t=>t.model===e.model&&t.supportedReasoningEfforts.some(({reasoningEffort:t})=>t===e.reasoningEffort))?[{...e,powerSettingIndex:n}]:[])}",
+    "var FRe=[{id:`gpt-5.6-terra:low`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`low`},{id:`gpt-5.6-sol:low`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`low`},{id:`gpt-5.6-sol:medium`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`medium`},{id:`gpt-5.6-sol:high`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`high`},{id:`gpt-5.6-sol:xhigh`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`xhigh`},{id:`gpt-5.6-sol:ultra`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`ultra`}];",
+    "var IRe=[{id:`gpt-5.6-terra:low`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`low`},{id:`gpt-5.6-terra:medium`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`medium`},{id:`gpt-5.6-terra:high`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`high`},{id:`gpt-5.6-terra:xhigh`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`xhigh`}];",
+  ].join("");
+}
+
+function filteredGpt56Models(enabledReasoningEfforts) {
+  const enabled = new Set(enabledReasoningEfforts);
+  return [
+    {
+      displayName: "GPT-5.6-Terra",
+      model: "gpt-5.6-terra",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh"]
+        .filter((reasoningEffort) => enabled.has(reasoningEffort))
+        .map((reasoningEffort) => ({ reasoningEffort })),
+    },
+    {
+      displayName: "GPT-5.6-Sol",
+      model: "gpt-5.6-sol",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+        .filter((reasoningEffort) => enabled.has(reasoningEffort))
+        .map((reasoningEffort) => ({ reasoningEffort })),
+    },
+  ];
 }
 
 function simplifiedChineseLocaleFixture() {
@@ -132,6 +164,11 @@ test("ui-tweaks is discoverable and disabled until listed in features.json", () 
         ["feature:ui-tweaks:model-picker-default-advanced-view", "webview-asset", "optional"],
         ["feature:ui-tweaks:model-picker-include-gpt-5-6", "webview-asset", "optional"],
         ["feature:ui-tweaks:model-picker-inline-model-list", "webview-asset", "optional"],
+        [
+          "feature:ui-tweaks:model-picker-dynamic-supported-reasoning-efforts",
+          "webview-asset",
+          "optional",
+        ],
         ["feature:ui-tweaks:reasoning-effort-labels-english", "webview-asset", "optional"],
       ],
     );
@@ -209,6 +246,49 @@ test("GPT-5.6 allowlist behavior admits only visible GPT-5.6 models", () => {
   );
 });
 
+test("GPT-5.6 Power slider follows reasoning efforts enabled in settings", () => {
+  const source = modelPickerPowerBundleFixture();
+  const patched = applyDynamicSupportedReasoningEffortsPatch(source);
+  const resolvePowerSelections = Function(`${patched};return ARe;`)();
+
+  assert.match(patched, new RegExp(DYNAMIC_POWER_EFFORTS_RUNTIME_MARKER));
+  assert.equal(applyDynamicSupportedReasoningEffortsPatch(patched), patched);
+  assert.deepEqual(
+    resolvePowerSelections(filteredGpt56Models(["low", "medium", "high", "xhigh", "max"]))
+      .map(({ id }) => id),
+    [
+      "gpt-5.6-terra:low",
+      "gpt-5.6-sol:low",
+      "gpt-5.6-sol:medium",
+      "gpt-5.6-sol:high",
+      "gpt-5.6-sol:xhigh",
+      "gpt-5.6-sol:max",
+    ],
+  );
+  assert.deepEqual(
+    resolvePowerSelections(filteredGpt56Models(["low", "medium", "high", "xhigh"]))
+      .map(({ id }) => id),
+    [
+      "gpt-5.6-terra:low",
+      "gpt-5.6-sol:low",
+      "gpt-5.6-sol:medium",
+      "gpt-5.6-sol:high",
+      "gpt-5.6-sol:xhigh",
+    ],
+  );
+});
+
+test("GPT-5.6 Power slider effort patch fails soft when upstream markers drift", () => {
+  const source = "function modelPickerPowerSelections(){return []}";
+  const { value, warnings } = withCapturedWarns(() =>
+    applyDynamicSupportedReasoningEffortsPatch(source, { warnOnMissingMarkers: true }),
+  );
+
+  assert.equal(value, source);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Could not find the supported reasoning effort mapper/);
+});
+
 test("model picker tweak can be disabled through feature settings", () => {
   const stateSource = modelPickerStateBundleFixture();
   const menuSource = modelPickerMenuBundleFixture();
@@ -229,6 +309,10 @@ test("model picker tweak can be disabled through feature settings", () => {
   assert.equal(applyDefaultAdvancedViewPatch(stateSource, context), stateSource);
   assert.equal(applyGpt56AllowlistPatch(menuSource, context), menuSource);
   assert.equal(applyInlineModelListPatch(menuSource, context), menuSource);
+  assert.equal(
+    applyDynamicSupportedReasoningEffortsPatch(modelPickerPowerBundleFixture(), context),
+    modelPickerPowerBundleFixture(),
+  );
 });
 
 test("model picker drift warns and leaves the asset unchanged", () => {
