@@ -12,6 +12,18 @@ const {
   loadLinuxFeaturePatchDescriptors,
 } = require("../../scripts/lib/linux-features.js");
 const {
+  ADVANCED_MENU_VIEW_PATTERN,
+  GPT_56_ALLOWLIST_MARKER,
+  INLINE_MODEL_LIST_RUNTIME_MARKER,
+  MODEL_ALLOWLIST_MARKER,
+  MODEL_PICKER_MENU_ASSET_PATTERN,
+  MODEL_PICKER_STATE_ASSET_PATTERN,
+  SIMPLE_MENU_VIEW_PATTERN,
+  applyDefaultAdvancedViewPatch,
+  applyGpt56AllowlistPatch,
+  applyInlineModelListPatch,
+} = require("./patches/model-picker-model-list.js");
+const {
   DEFAULT_PROJECT_NAME_STYLE,
   PROJECTS_SIDEBAR_ASSET_PATTERN,
   PROJECT_NAME_SELECTOR,
@@ -31,6 +43,27 @@ function projectBundleFixture() {
   return [
     "function row(){let j=Pn(`group/folder-row group relative flex h-[var(--height-token-row)] text-sm text-token-foreground`);",
     "let V=(0,Iy.jsx)(`span`,{className:`text-fade-truncate pr-1`,children:p});return [j,V]}",
+  ].join("");
+}
+
+function modelPickerStateBundleFixture() {
+  return [
+    "function picker(){",
+    "vz=wu(`composer-model-picker-menu-view-v1`,`simple`);",
+    "}",
+  ].join("");
+}
+
+function modelPickerMenuBundleFixture() {
+  return [
+    "function menu(){",
+    "id:`composer.intelligenceDropdown.model.title`;",
+    `const allowed=${MODEL_ALLOWLIST_MARKER};`,
+    "let ue=fragment;let de=ue,fe;",
+    "id:`composer.intelligenceDropdown.model.rowLabel`;",
+    "id:`composer.intelligenceDropdown.effort.title`;",
+    "let we=(0,c6.jsxs)(c6.Fragment,{children:[ye,effort]});",
+    "}",
   ].join("");
 }
 
@@ -96,12 +129,117 @@ test("ui-tweaks is discoverable and disabled until listed in features.json", () 
       descriptors.map((descriptor) => [descriptor.id, descriptor.phase, descriptor.ciPolicy]),
       [
         ["feature:ui-tweaks:sidebar-project-name-style", "webview-asset", "optional"],
+        ["feature:ui-tweaks:model-picker-default-advanced-view", "webview-asset", "optional"],
+        ["feature:ui-tweaks:model-picker-include-gpt-5-6", "webview-asset", "optional"],
+        ["feature:ui-tweaks:model-picker-inline-model-list", "webview-asset", "optional"],
         ["feature:ui-tweaks:reasoning-effort-labels-english", "webview-asset", "optional"],
       ],
     );
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("model picker descriptors target the current state and menu bundles", () => {
+  assert.match(
+    "app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-MXsOJYYa.js",
+    MODEL_PICKER_STATE_ASSET_PATTERN,
+  );
+  assert.match(
+    "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-C17KDkOa.js",
+    MODEL_PICKER_MENU_ASSET_PATTERN,
+  );
+  assert.doesNotMatch(
+    "app-initial~app-main~page-BF1QkwFT.js",
+    MODEL_PICKER_STATE_ASSET_PATTERN,
+  );
+  assert.doesNotMatch(
+    "app-initial~app-main~page-BF1QkwFT.js",
+    MODEL_PICKER_MENU_ASSET_PATTERN,
+  );
+});
+
+test("model picker opens advanced view and renders model choices inline", () => {
+  const stateSource = modelPickerStateBundleFixture();
+  const menuSource = modelPickerMenuBundleFixture();
+  const patchedState = applyDefaultAdvancedViewPatch(stateSource);
+  const allowlistedMenu = applyGpt56AllowlistPatch(menuSource);
+  const patchedMenu = applyInlineModelListPatch(allowlistedMenu);
+
+  assert.match(patchedState, ADVANCED_MENU_VIEW_PATTERN);
+  assert.doesNotMatch(patchedState, SIMPLE_MENU_VIEW_PATTERN);
+  assert.match(patchedMenu, new RegExp(GPT_56_ALLOWLIST_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(patchedMenu, new RegExp(MODEL_ALLOWLIST_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(patchedMenu, new RegExp(INLINE_MODEL_LIST_RUNTIME_MARKER));
+  assert.match(patchedMenu, /children:\[de,\/\*codex-linux-inline-model-list\*\//);
+  assert.equal(applyDefaultAdvancedViewPatch(patchedState), patchedState);
+  assert.equal(applyGpt56AllowlistPatch(patchedMenu), patchedMenu);
+  assert.equal(applyInlineModelListPatch(patchedMenu), patchedMenu);
+});
+
+test("GPT-5.6 allowlist behavior admits only visible GPT-5.6 models", () => {
+  const evaluateAvailability = ({ model, hidden, availableModels }) => {
+    const patchedExpression = applyGpt56AllowlistPatch(`return ${MODEL_ALLOWLIST_MARKER};`);
+    return Function("l", "t", "n", patchedExpression)(
+      true,
+      new Set(availableModels),
+      { model, hidden },
+    );
+  };
+
+  assert.equal(
+    evaluateAvailability({ model: "gpt-5.6-sol", hidden: false, availableModels: [] }),
+    true,
+  );
+  assert.equal(
+    evaluateAvailability({ model: "gpt-5.6-sol", hidden: true, availableModels: [] }),
+    false,
+  );
+  assert.equal(
+    evaluateAvailability({ model: "gpt-5.5-codex", hidden: false, availableModels: [] }),
+    false,
+  );
+  assert.equal(
+    evaluateAvailability({
+      model: "gpt-5.5-codex",
+      hidden: false,
+      availableModels: ["gpt-5.5-codex"],
+    }),
+    true,
+  );
+});
+
+test("model picker tweak can be disabled through feature settings", () => {
+  const stateSource = modelPickerStateBundleFixture();
+  const menuSource = modelPickerMenuBundleFixture();
+  const context = {
+    feature: {
+      settings: {
+        tweaks: {
+          modelPicker: {
+            showModelsByDefault: {
+              enabled: false,
+            },
+          },
+        },
+      },
+    },
+  };
+
+  assert.equal(applyDefaultAdvancedViewPatch(stateSource, context), stateSource);
+  assert.equal(applyGpt56AllowlistPatch(menuSource, context), menuSource);
+  assert.equal(applyInlineModelListPatch(menuSource, context), menuSource);
+});
+
+test("model picker drift warns and leaves the asset unchanged", () => {
+  const source = "console.log('model picker drifted');";
+  const { value, warnings } = withCapturedWarns(() =>
+    applyDefaultAdvancedViewPatch(source, { warnOnMissingMarkers: true }),
+  );
+
+  assert.equal(value, source);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^WARN: Could not find the persisted model picker view marker/);
 });
 
 test("reasoning effort labels stay in English in the Simplified Chinese locale", () => {

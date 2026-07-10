@@ -7,6 +7,11 @@
     "patchDescriptors": "./patch.js"
   },
   "tweaks": {
+    "modelPicker": {
+      "showModelsByDefault": {
+        "enabled": true
+      }
+    },
     "reasoning": {
       "keepEffortLabelsEnglish": {
         "enabled": true

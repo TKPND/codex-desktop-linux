@@ -17,6 +17,7 @@ Enable it in the local, gitignored feature config:
 
 | Tweak | Patch module | What it does | Settings |
 | --- | --- | --- | --- |
+| `modelPicker.showModelsByDefault` | `patches/model-picker-model-list.js` | Opens the advanced picker by default and shows model choices inline instead of hiding them behind the compact Power slider and a nested Model submenu. | `tweaks.modelPicker.showModelsByDefault.enabled` |
 | `reasoning.keepEffortLabelsEnglish` | `patches/reasoning-effort-labels.js` | Keeps reasoning effort values in English in the Simplified Chinese UI while leaving the surrounding interface translated. | `tweaks.reasoning.keepEffortLabelsEnglish.enabled` |
 | `sidebar.projectName` | `patches/sidebar-project-name.js` | Styles project names in the left sidebar project list. It does not style `Projects` / `Chats` section headings and does not style chat rows. | `tweaks.sidebar.projectName.enabled`, `tweaks.sidebar.projectName.style` |
 
@@ -46,6 +47,18 @@ Example local config:
 ```
 
 Each tweak documents its own config keys below.
+
+### `modelPicker.showModelsByDefault`
+
+Makes the detailed model list the default Codex composer picker view. The model
+rows are rendered inline, so newly available families such as GPT-5.6 Luna,
+Terra, and Sol remain visible without first switching away from the compact
+Power slider or opening a nested Model submenu.
+
+Config keys:
+
+- `enabled`: `true` applies the tweak, `false` keeps the feature enabled but
+  leaves the upstream model picker unchanged.
 
 ### `reasoning.keepEffortLabelsEnglish`
 
