@@ -31,6 +31,8 @@ const GENERAL_SETTINGS_CHILDREN_WITH_ROW =
   `children:[S,C,w,T,${GENERAL_SETTINGS_ROW_CALL},D,O,k,A,j,M,N,P,L]`;
 const GENERAL_SETTINGS_CHILDREN_WITH_OLD_ROW =
   `children:[S,C,w,T,D,O,k,${GENERAL_SETTINGS_ROW_CALL},A,j,M,N,P,L]`;
+const ASSISTANT_RENDER_CANDIDATE_PATTERN =
+  /\.(?:jsx|jsxs)\)\([A-Za-z_$][\w$]*,\{(?=[^{}]{0,2000}\bitem:)(?=[^{}]{0,2000}\bassistantCopyText:)(?=[^{}]{0,2000}\bconversationId:)/u;
 
 function warn(message, patchName) {
   console.warn(`WARN: ${message} - skipping ${patchName}`);
@@ -181,9 +183,7 @@ function applyAssistantRenderPatch(source) {
     return patched;
   }
 
-  const assistantRenderCandidatePattern =
-    /\.(?:jsx|jsxs)\)\([A-Za-z_$][\w$]*,\{(?=[^{}]{0,2000}\bitem:)(?=[^{}]{0,2000}\bassistantCopyText:)(?=[^{}]{0,2000}\bconversationId:)/u;
-  if (assistantRenderCandidatePattern.test(source)) {
+  if (ASSISTANT_RENDER_CANDIDATE_PATTERN.test(source)) {
     warn("Could not find assistant message render call", "read aloud assistant render patch");
   }
   return source;
@@ -714,7 +714,15 @@ function applySettingsAssetPatch(extractedDir) {
 }
 
 function applyWebviewPatch(source) {
-  return applyAssistantRenderPatch(applyIndexRuntimePatch(source));
+  const assistantPatched = applyAssistantRenderPatch(source);
+  const alreadyHasButton = source.includes(`globalThis.${HELPER_MARKER}?.(`);
+  if (assistantPatched === source && !alreadyHasButton) {
+    if (!ASSISTANT_RENDER_CANDIDATE_PATTERN.test(source)) {
+      warn("Could not find assistant message render call", "read aloud assistant render patch");
+    }
+    return source;
+  }
+  return applyIndexRuntimePatch(assistantPatched);
 }
 
 module.exports = {

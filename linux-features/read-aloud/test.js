@@ -21,6 +21,11 @@ const {
   applySettingsSharedNavPatch,
   descriptors: featurePatches,
 } = require("./patch.js");
+const {
+  applyWebviewAssetPatchDescriptors,
+  normalizePatchDescriptors,
+} = require("../../scripts/patches/engine.js");
+const { createPatchReport } = require("../../scripts/lib/patch-report.js");
 
 function twice(fn, source) {
   const patched = fn(source);
@@ -926,6 +931,67 @@ test("assistant runtime descriptor targets current shared assistant bundles", ()
     "app-initial~app-main~onboarding-page~hotkey-window-thread-page~editor-diff-page~thread-app-~current.js",
   ]) {
     assert.equal(descriptor.pattern.test(legacyName), false, legacyName);
+  }
+});
+
+test("assistant runtime descriptor fails soft and atomically when the current render contract drifts", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-drift-"));
+  try {
+    const assetsDir = path.join(root, "webview", "assets");
+    fs.mkdirSync(assetsDir, { recursive: true });
+    const assetPath = path.join(
+      assetsDir,
+      "app-initial~app-main~onboarding-page-zcfEkMl-.js",
+    );
+    const source = "console.log(`assistant render contract moved`);";
+    fs.writeFileSync(assetPath, source);
+    const descriptor = featurePatches.find((patch) => patch.id === "assistant-runtime");
+    const descriptors = normalizePatchDescriptors([
+      { ...descriptor, featureId: "read-aloud", sourceKind: "feature" },
+    ]);
+    const report = createPatchReport();
+
+    applyWebviewAssetPatchDescriptors(root, descriptors, {}, report);
+
+    assert.equal(fs.readFileSync(assetPath, "utf8"), source);
+    assert.equal(report.patches.length, 1);
+    assert.equal(report.patches[0].status, "skipped-optional");
+    assert.match(report.patches[0].reason, /Could not find assistant message render call/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assistant runtime descriptor reports applied then already-applied for the current contract", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-current-"));
+  try {
+    const assetsDir = path.join(root, "webview", "assets");
+    fs.mkdirSync(assetsDir, { recursive: true });
+    const assetPath = path.join(
+      assetsDir,
+      "app-initial~app-main~onboarding-page-zcfEkMl-.js",
+    );
+    fs.writeFileSync(
+      assetPath,
+      "return (0,DX.jsx)(Jft,{item:n,assistantCopyText:_,conversationId:l,renderCodeBlocksAsWritingBlocks:ie})",
+    );
+    const descriptor = featurePatches.find((patch) => patch.id === "assistant-runtime");
+    const descriptors = normalizePatchDescriptors([
+      { ...descriptor, featureId: "read-aloud", sourceKind: "feature" },
+    ]);
+    const firstReport = createPatchReport();
+    const secondReport = createPatchReport();
+
+    applyWebviewAssetPatchDescriptors(root, descriptors, {}, firstReport);
+    applyWebviewAssetPatchDescriptors(root, descriptors, {}, secondReport);
+
+    const patched = fs.readFileSync(assetPath, "utf8");
+    assert.match(patched, /codex-linux-read-aloud-button/);
+    assert.match(patched, /codexLinuxReadAloudVersion/);
+    assert.equal(firstReport.patches[0].status, "applied");
+    assert.equal(secondReport.patches[0].status, "already-applied");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
