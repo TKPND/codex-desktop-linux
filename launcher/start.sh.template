@@ -219,7 +219,7 @@ Launches the $CODEX_LINUX_APP_DISPLAY_NAME app.
 
 Options:
   -h, --help                  Show this help message and exit
-  --new-instance              Start a separate app instance on the first free port in the multi-launch range
+  --new-instance              Start a separate trayless app instance on the first free port in the multi-launch range
   --new-chat                  Open the main window on a new chat
   --quick-chat                Open a projectless quick chat
   --prompt-chat               Show the compact prompt for a new chat

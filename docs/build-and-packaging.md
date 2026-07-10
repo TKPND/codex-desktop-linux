@@ -133,6 +133,10 @@ Open an independent app process:
 ./codex-app/start.sh --new-instance
 ```
 
+Secondary instances do not register system tray items. This keeps temporary
+development and test instances from adding indistinguishable icons alongside
+the primary app's tray item.
+
 Configure the port range or make every launch use multi-instance mode:
 
 ```bash

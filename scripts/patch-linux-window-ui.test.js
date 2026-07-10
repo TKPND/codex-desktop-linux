@@ -3470,7 +3470,7 @@ test("adds Linux tray support including the platform guard", () => {
   );
   assert.match(
     patched,
-    /\(E\|\|process\.platform===`linux`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&oe\(\);/,
+    /\(E\|\|process\.platform===`linux`&&process\.env\.CODEX_LINUX_MULTI_LAUNCH!==`1`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&oe\(\);/,
   );
   assert.doesNotMatch(patched, /process\.platform===`linux`&&codexLinuxIsTrayEnabled\(\)/);
 });
@@ -3705,7 +3705,7 @@ test("adds Linux tray support for current minified window and startup identifier
   assert.match(patched, /e\.preventDefault\(\),j\.hide\(\);return/);
   assert.match(
     patched,
-    /\(E\|\|process\.platform===`linux`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&ce\$\(\);/,
+    /\(E\|\|process\.platform===`linux`&&process\.env\.CODEX_LINUX_MULTI_LAUNCH!==`1`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&ce\$\(\);/,
   );
   assert.match(
     patched,
@@ -3728,7 +3728,7 @@ test("adds Linux tray startup support for current appBrand initializer", () => {
   assert.deepEqual(warnings.filter((warning) => warning.includes("tray startup")), []);
   assert.match(
     patched,
-    /\(E\|\|process\.platform===`linux`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&ye\(\);/,
+    /\(E\|\|process\.platform===`linux`&&process\.env\.CODEX_LINUX_MULTI_LAUNCH!==`1`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&ye\(\);/,
   );
   assert.match(
     patched,
@@ -3750,11 +3750,11 @@ test("scopes dynamic tray startup matching to the tray initializer", () => {
   assert.match(patched, /U&&startOther\(\);/);
   assert.doesNotMatch(
     patched,
-    /\(U\|\|process\.platform===`linux`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&startOther\(\);/,
+    /\(U\|\|process\.platform===`linux`&&process\.env\.CODEX_LINUX_MULTI_LAUNCH!==`1`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&startOther\(\);/,
   );
   assert.match(
     patched,
-    /\(E\|\|process\.platform===`linux`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&ce\$\(\);/,
+    /\(E\|\|process\.platform===`linux`&&process\.env\.CODEX_LINUX_MULTI_LAUNCH!==`1`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&ce\$\(\);/,
   );
   assert.match(patched, /catch\(e\)\{A=!1\}\};U&&startOther\(\);/);
   assert.match(
@@ -3774,7 +3774,7 @@ test("logs Linux tray setup failures when the catch body contains nested objects
 
   assert.match(
     patched,
-    /\(D\|\|process\.platform===`linux`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&_e\(\);/,
+    /\(D\|\|process\.platform===`linux`&&process\.env\.CODEX_LINUX_MULTI_LAUNCH!==`1`&&\(typeof codexLinuxIsTrayEnabled!==`function`\|\|codexLinuxIsTrayEnabled\(\)\)\)&&_e\(\);/,
   );
   assert.match(
     patched,

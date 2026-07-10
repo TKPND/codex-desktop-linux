@@ -244,7 +244,10 @@ function applyLinuxTrayPatch(currentSource, iconPathExpression) {
     console.warn("WARN: Could not find tray menu thread update handler — skipping Linux tray context refresh patch");
   }
 
-  const trayEnabledExpression = "process.platform===`linux`&&(typeof codexLinuxIsTrayEnabled!==`function`||codexLinuxIsTrayEnabled())";
+  // Multi-launch instances use isolated profiles, so their tray preference
+  // starts enabled independently. Keep secondary/dev instances out of SNI;
+  // otherwise every --new-instance launch adds another identical tray item.
+  const trayEnabledExpression = "process.platform===`linux`&&process.env.CODEX_LINUX_MULTI_LAUNCH!==`1`&&(typeof codexLinuxIsTrayEnabled!==`function`||codexLinuxIsTrayEnabled())";
   const traySetup = findDynamicTraySetup(patchedSource);
   const dynamicTrayStartupMatch = traySetup == null
     ? null
