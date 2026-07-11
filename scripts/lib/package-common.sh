@@ -96,6 +96,17 @@ fs.writeFileSync(targetPath, `${JSON.stringify(config, null, 2)}\n`);
 NODE
 }
 
+stage_update_builder_global_dictation_source() {
+    local update_builder_root="$1"
+    local source_root="$REPO_DIR/global-dictation-linux"
+    local target_root="$update_builder_root/global-dictation-linux"
+
+    mkdir -p "$target_root/src"
+    cp "$source_root/Cargo.toml" "$target_root/Cargo.toml"
+    cp "$source_root/Cargo.lock" "$target_root/Cargo.lock"
+    cp -R "$source_root/src/." "$target_root/src/"
+}
+
 linux_features_root_path() {
     local helper="$REPO_DIR/scripts/lib/linux-features.js"
     local node_bin
@@ -848,7 +859,7 @@ stage_update_builder_bundle() {
     stage_update_builder_linux_features_tree "$update_builder_root"
     stage_update_builder_linux_features_config "$update_builder_root"
     if linux_feature_enabled "global-dictation"; then
-        cp -r "$REPO_DIR/global-dictation-linux" "$update_builder_root/global-dictation-linux"
+        stage_update_builder_global_dictation_source "$update_builder_root"
     fi
     cp "$REPO_DIR/packaging/linux/codex-update-manager.postrm" "$update_builder_root/packaging/linux/codex-update-manager.postrm"
     cp "$REPO_DIR/assets/codex.png" "$update_builder_root/assets/codex.png"

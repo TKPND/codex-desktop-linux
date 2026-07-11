@@ -733,10 +733,13 @@ test_update_builder_preserves_enabled_linux_features_config() {
     local staged_local_manifest="$root/opt/codex-desktop/update-builder/linux-features/local/local-tool/feature.json"
     local source_info="$root/opt/codex-desktop/update-builder/.codex-linux/source-info.json"
     local update_builder_manifest="$root/opt/codex-desktop/update-builder/.codex-linux/update-builder-manifest.txt"
+    local global_dictation_target_marker="$REPO_DIR/global-dictation-linux/target/codex-smoke-should-not-stage.txt"
 
     mkdir -p "$workspace"
     make_fake_app "$app_dir"
     mkdir -p "$features_root/example-feature" "$features_root/global-dictation" "$features_root/local/local-tool"
+    mkdir -p "$(dirname "$global_dictation_target_marker")"
+    printf '%s\n' "generated build output" > "$global_dictation_target_marker"
     printf '%s\n' '# Linux Features' > "$features_root/README.md"
     printf '%s\n' '{"enabled":[]}' > "$features_root/features.example.json"
     printf '%s\n' '{"id":"example-feature","title":"Example Linux Feature"}' \
@@ -800,7 +803,10 @@ JSON
     assert_contains "$update_builder_manifest" "global-dictation-linux/Cargo.toml"
     assert_contains "$update_builder_manifest" "assets/codex-linux.png"
     assert_not_contains "$update_builder_manifest" "^node-runtime/"
+    assert_not_contains "$update_builder_manifest" "global-dictation-linux/target/"
     assert_file_exists "$root/opt/codex-desktop/update-builder/global-dictation-linux/Cargo.toml"
+    assert_file_not_exists "$root/opt/codex-desktop/update-builder/global-dictation-linux/target/codex-smoke-should-not-stage.txt"
+    rm -f "$global_dictation_target_marker"
 
     node - "$staged_config" <<'NODE' || fail "Expected staged Linux features config to be sanitized"
 const fs = require("node:fs");
