@@ -1778,7 +1778,7 @@ codex_cli_missing_optional_dependency() {
     else
         probe_status=$?
     fi
-    if [ "$probe_status" -ne 124 ] && \
+    if [ "$probe_status" -ne 0 ] && [ "$probe_status" -ne 124 ] && \
         grep -Eq 'Missing optional dependency[[:space:]]*@openai/codex-linux-(x64|arm64)([[:space:].,:;)]|$)' "$output_file" "$stderr_file"; then
         rm -f "$output_file" "$stderr_file" "${output_file}.timed-out"
         return 0

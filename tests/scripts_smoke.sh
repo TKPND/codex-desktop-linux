@@ -6307,10 +6307,12 @@ PY
     local missing_x64_cli="$workspace/missing-x64-codex"
     local missing_arm64_cli="$workspace/missing-arm64-codex"
     local unrelated_failure_cli="$workspace/unrelated-failure-codex"
+    local successful_warning_cli="$workspace/successful-warning-codex"
     printf '#!/usr/bin/env bash\nprintf "Error: Missing optional dependency@openai/codex-linux-x64. Reinstall Codex.\\n" >&2\nexit 1\n' > "$missing_x64_cli"
     printf '#!/usr/bin/env bash\nprintf "Missing optional dependency @openai/codex-linux-arm64\\n" >&2\nexit 1\n' > "$missing_arm64_cli"
     printf '#!/usr/bin/env bash\nprintf "network unavailable\\n" >&2\nexit 1\n' > "$unrelated_failure_cli"
-    chmod +x "$missing_x64_cli" "$missing_arm64_cli" "$unrelated_failure_cli"
+    printf '#!/usr/bin/env bash\nprintf "Missing optional dependency @openai/codex-linux-x64.\\n" >&2\nprintf "codex-cli 0.200.0\\n"\n' > "$successful_warning_cli"
+    chmod +x "$missing_x64_cli" "$missing_arm64_cli" "$unrelated_failure_cli" "$successful_warning_cli"
     env -i PATH="$HOST_TOOL_PATH" HOME="$fake_home" TMPDIR="$workspace" "$launcher_probe" missing-optional "$missing_x64_cli" || fail "x64 optional dependency failure must request synchronous repair"
     env -i PATH="$HOST_TOOL_PATH" HOME="$fake_home" TMPDIR="$workspace" "$launcher_probe" missing-optional "$missing_arm64_cli" || fail "arm64 optional dependency failure must request synchronous repair"
     if compgen -G "$workspace/codex-cli-output.*" >/dev/null || compgen -G "$workspace/codex-cli-error.*" >/dev/null; then
@@ -6318,6 +6320,9 @@ PY
     fi
     if env -i PATH="$HOST_TOOL_PATH" HOME="$fake_home" TMPDIR="$workspace" "$launcher_probe" missing-optional "$unrelated_failure_cli"; then
         fail "unrelated CLI failures must not request synchronous npm repair"
+    fi
+    if env -i PATH="$HOST_TOOL_PATH" HOME="$fake_home" TMPDIR="$workspace" "$launcher_probe" missing-optional "$successful_warning_cli"; then
+        fail "successful CLI probes must not request repair based on diagnostic text alone"
     fi
     if env -i PATH="$HOST_TOOL_PATH" HOME="$fake_home" "$launcher_probe" missing-optional "$fallback_version_cli"; then
         fail "working CLI versions must keep the background preflight"
