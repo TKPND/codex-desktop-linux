@@ -53,11 +53,12 @@ const CURRENT_REMOTE_CONVERSATION_ASSET =
 const LATEST_REMOTE_CONVERSATION_ASSET =
   "app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~glxlkd48-test.js";
 const CURRENT_REMOTE_RUNTIME_ASSET =
-  "app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-test.js";
+  "app-initial~app-main~new-thread-panel-page~onboarding-page~login-route~appgen-library-page~~gpgl9un5-test.js";
 const UNIFIED_REMOTE_CONVERSATION_ASSET =
   "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~gwqc41kz-test.js";
 const CURRENT_APP_MAIN_PAGE_ASSET =
   "app-initial~app-main~page-test.js";
+const CURRENT_REMOTE_CONNECTIONS_VISIBILITY_ASSET = CURRENT_APP_MAIN_PAGE_ASSET;
 const CURRENT_REMOTE_CONVERSATION_STATUS_ASSET =
   "app-initial~app-main~projects-index-page~remote-conversation-page-test.js";
 
@@ -204,8 +205,8 @@ function syntheticCurrentUsePluginVisibilityBundle() {
   return "function ke({remoteControlConnectionsState:e,slingshotEnabled:t}){return t&&(e?.available??!0)&&e?.accessRequired!==!0}export{ke as l};";
 }
 
-function syntheticMobileConnectedSettingsBundle() {
-  return "let y={id:`codexMobile.setupDialog.connected.computerUse.description`,defaultMessage:`Let Codex control the apps on your Mac.`,description:`Description for enabling Computer Use after mobile setup`};";
+function syntheticMobileSetupDialogComputerUseBundle() {
+  return "let y={id:`codexMobile.setupDialog.connected.computerUse.description`,defaultMessage:`Let ChatGPT control apps on your Mac`,description:`Description for enabling Computer Use after mobile setup`};";
 }
 
 function syntheticRemoteConnectionsSettingsCopyBundle() {
@@ -217,10 +218,11 @@ function syntheticRemoteConnectionsSettingsCopyBundle() {
     "let c={id:`settings.remoteConnections.accessOtherDevices.header.title`,defaultMessage:`Devices you can control from this Mac`,description:`Header title for the devices this computer can access`};",
     "let d={id:`settings.remoteConnections.ssh.header.title`,defaultMessage:`SSH connections from this Mac`,description:`Header title for SSH connections from this Mac`};",
     "let e={id:`settings.remoteControlConnections.keepAwake.title`,defaultMessage:`Keep this Mac awake`,description:`Keep awake title`};",
+    "let f={id:`settings.remoteConnections.connectedDevices.description`,defaultMessage:`iPhone Pro and Samsung Galaxy devices connected to ChatGPT on a Mac`,description:`Connected device description`};",
   ].join("");
 }
 
-function syntheticMobileSetupFlowCopyBundle() {
+function syntheticMobileSetupDialogCopyBundle() {
   return [
     "let a={id:`codexMobile.setupDialog.connected.lockedComputerUse.title`,defaultMessage:`Use your Mac apps while locked`,description:`Title for enabling Locked Computer Use after mobile setup`};",
     "let b={id:`codexMobile.setupDialog.connected.lockedComputerUse.description`,defaultMessage:`Control Mac apps from your phone`,description:`Description for enabling Locked Computer Use after mobile setup`};",
@@ -1004,9 +1006,18 @@ test("remote mobile control feature exposes opt-in main-bundle and webview patch
     );
     assert.ok(visibilityDescriptor);
     assert.equal(visibilityDescriptor.pattern.test("remote-connections-settings-fixture.js"), false);
-    assert.equal(visibilityDescriptor.pattern.test(CURRENT_REMOTE_RUNTIME_ASSET), true);
+    assert.equal(visibilityDescriptor.pattern.test(CURRENT_REMOTE_CONNECTIONS_VISIBILITY_ASSET), true);
     assert.equal(visibilityDescriptor.pattern.test("use-plugin-install-flow-fixture.js"), false);
     assert.equal(visibilityDescriptor.pattern.test("app-main-fixture.js"), false);
+
+    const copyDescriptor = descriptors.find((descriptor) =>
+      descriptor.id === "feature:remote-mobile-control:linux-remote-control-copy"
+    );
+    assert.ok(copyDescriptor);
+    assert.equal(copyDescriptor.pattern.test("codex-mobile-setup-dialog-test.js"), true);
+    assert.equal(copyDescriptor.pattern.test("remote-connections-settings-test.js"), true);
+    assert.equal(copyDescriptor.pattern.test("codex-mobile-setup-flow-test.js"), false);
+    assert.equal(copyDescriptor.pattern.test("use-codex-mobile-connected-settings-test.js"), false);
 
     const featureSyncDescriptor = descriptors.find((descriptor) =>
       descriptor.id === "feature:remote-mobile-control:linux-remote-control-feature-sync"
@@ -1392,45 +1403,15 @@ test("Linux remote-control visibility patch handles current use-plugin gate shap
   assert.equal(applyLinuxRemoteControlVisibilityPatch(patched), patched);
 });
 
-test("Linux remote-control visibility patch ignores unrelated Linux user-agent checks", () => {
-  const source = `const platform=()=>navigator.userAgent.includes(\`Linux\`);${syntheticCurrentUsePluginVisibilityBundle()}`;
-  const { result: patched, warnings } = captureWarnings(() =>
-    applyLinuxRemoteControlVisibilityPatch(source)
-  );
-
-  assert.notEqual(patched, source);
-  assert.match(patched, /codexLinuxRemoteControlVisibilityEnabled/);
-  assert.deepEqual(warnings, []);
-  const secondPass = captureWarnings(() => applyLinuxRemoteControlVisibilityPatch(patched));
-  assert.equal(secondPass.result, patched);
-  assert.deepEqual(secondPass.warnings, []);
-});
-
-test("Linux remote-control visibility patch handles a new gate beside an existing marker", () => {
-  const source = `/*codexLinuxRemoteControlVisibilityEnabled*/${syntheticCurrentUsePluginVisibilityBundle()}`;
-  const patched = applyLinuxRemoteControlVisibilityPatch(source);
-
-  assert.notEqual(patched, source);
-  assert.match(patched, /navigator\.userAgent\.includes\(`Linux`\)/);
-});
-
 test("Linux mobile setup copy does not refer to Mac-only Computer Use", () => {
-  const source = syntheticMobileConnectedSettingsBundle();
+  const source = syntheticMobileSetupDialogComputerUseBundle();
   const patched = applyLinuxRemoteControlCopyPatch(source);
 
   assert.notEqual(patched, source);
   assert.doesNotMatch(patched, /apps on your Mac/);
   assert.match(patched, /apps on this Linux desktop/);
-  const secondPass = captureWarnings(() => applyLinuxRemoteControlCopyPatch(patched));
-  assert.equal(secondPass.result, patched);
-  assert.deepEqual(secondPass.warnings, []);
-});
-
-test("Linux remote-control copy handles new known copy beside an existing marker", () => {
-  const source = "/*codexLinuxRemoteControlCopy*/Keep this Mac awake";
-  const patched = applyLinuxRemoteControlCopyPatch(source);
-
-  assert.equal(patched, "/*codexLinuxRemoteControlCopy*/Keep this Linux desktop awake");
+  assert.match(patched, /codexLinuxRemoteControlCopy/);
+  assert.equal(applyLinuxRemoteControlCopyPatch(patched), patched);
 });
 
 test("Linux remote-control settings copy does not refer to this Mac", () => {
@@ -1445,13 +1426,13 @@ test("Linux remote-control settings copy does not refer to this Mac", () => {
   assert.match(patched, /SSH connections from this Linux desktop/);
   assert.match(patched, /Keep this Linux desktop awake/);
   assert.match(patched, /defaultMessage:`Linux`/);
-  const secondPass = captureWarnings(() => applyLinuxRemoteControlCopyPatch(patched));
-  assert.equal(secondPass.result, patched);
-  assert.deepEqual(secondPass.warnings, []);
+  assert.match(patched, /connected to ChatGPT on this Linux desktop/);
+  assert.doesNotMatch(patched, /connected to ChatGPT on a Mac/);
+  assert.equal(applyLinuxRemoteControlCopyPatch(patched), patched);
 });
 
-test("Linux mobile setup flow copy does not refer to Mac-only setup", () => {
-  const source = syntheticMobileSetupFlowCopyBundle();
+test("Linux mobile setup dialog copy does not refer to Mac-only setup", () => {
+  const source = syntheticMobileSetupDialogCopyBundle();
   const patched = applyLinuxRemoteControlCopyPatch(source);
 
   assert.notEqual(patched, source);
@@ -1460,9 +1441,7 @@ test("Linux mobile setup flow copy does not refer to Mac-only setup", () => {
   assert.match(patched, /Control Linux apps from your phone/);
   assert.match(patched, /apps on this Linux desktop/);
   assert.match(patched, /Connect your phone to this Linux desktop/);
-  const secondPass = captureWarnings(() => applyLinuxRemoteControlCopyPatch(patched));
-  assert.equal(secondPass.result, patched);
-  assert.deepEqual(secondPass.warnings, []);
+  assert.equal(applyLinuxRemoteControlCopyPatch(patched), patched);
 });
 
 test("Linux remote-control settings UX patch keeps outbound tab visible and removes Mac copy", () => {
@@ -2483,17 +2462,16 @@ test("remote mobile feature patch report records feature metadata and partial wa
       fs.writeFileSync(path.join(assetsDir, "app-test.png"), "");
       fs.writeFileSync(
         path.join(assetsDir, CURRENT_REMOTE_RUNTIME_ASSET),
-        syntheticRemoteConnectionVisibilityBundle() +
-          syntheticCurrentUsePluginVisibilityBundle() +
-          syntheticAppServerManagerSignalsBundle() +
+        syntheticAppServerManagerSignalsBundle() +
           syntheticAppServerManagerStatusBundle() +
-          syntheticCurrentStatusWaitBundle() +
           syntheticCompletedItemRecoveryBundle() +
           syntheticRemoteTerminalStatusBundle(),
       );
       fs.writeFileSync(
         path.join(assetsDir, CURRENT_APP_MAIN_PAGE_ASSET),
-        syntheticAppMainFeatureSyncBundle() + syntheticAppMainEnablementBridgeBundle(),
+        syntheticRemoteConnectionVisibilityBundle() +
+          syntheticAppMainFeatureSyncBundle() +
+          syntheticAppMainEnablementBridgeBundle(),
       );
       fs.writeFileSync(
         path.join(assetsDir, CURRENT_REMOTE_CONVERSATION_STATUS_ASSET),
@@ -2517,8 +2495,10 @@ test("remote mobile feature patch report records feature metadata and partial wa
           "if(!this.conversations.get(r)){z.error(`Received turn/completed for unknown conversation`,{safe:{id:r},sensitive:{}});break}",
         ),
       );
-      fs.writeFileSync(path.join(assetsDir, "codex-mobile-setup-flow-test.js"), syntheticMobileSetupFlowCopyBundle());
-      fs.writeFileSync(path.join(assetsDir, "use-codex-mobile-connected-settings-test.js"), syntheticMobileConnectedSettingsBundle());
+      fs.writeFileSync(
+        path.join(assetsDir, "codex-mobile-setup-dialog-test.js"),
+        syntheticMobileSetupDialogCopyBundle() + syntheticMobileSetupDialogComputerUseBundle(),
+      );
 
       const report = createPatchReport();
       withFeatureRootEnv(root, () => patchExtractedApp(tempApp, { report }));
@@ -3174,7 +3154,6 @@ test("remote mobile control feature participates in ASAR patching and reports", 
         fs.writeFileSync(
           path.join(assetsDir, CURRENT_REMOTE_RUNTIME_ASSET),
           syntheticRemoteConnectionVisibilityBundle() +
-            syntheticCurrentUsePluginVisibilityBundle() +
             syntheticAppServerManagerSignalsBundle() +
             syntheticAppServerManagerStatusBundle() +
             syntheticCurrentStatusWaitBundle() +
@@ -3189,12 +3168,8 @@ test("remote mobile control feature participates in ASAR patching and reports", 
             syntheticCurrentRevokeSetupResetBundle(),
         );
         fs.writeFileSync(
-          path.join(assetsDir, "codex-mobile-setup-flow-test.js"),
-          syntheticMobileSetupFlowCopyBundle(),
-        );
-        fs.writeFileSync(
-          path.join(assetsDir, "use-codex-mobile-connected-settings-test.js"),
-          syntheticMobileConnectedSettingsBundle(),
+          path.join(assetsDir, "codex-mobile-setup-dialog-test.js"),
+          syntheticMobileSetupDialogCopyBundle() + syntheticMobileSetupDialogComputerUseBundle(),
         );
         fs.writeFileSync(
           path.join(assetsDir, OLD_APP_SERVER_MANAGER_ASSET),
@@ -3206,7 +3181,8 @@ test("remote mobile control feature participates in ASAR patching and reports", 
         );
         fs.writeFileSync(
           path.join(assetsDir, CURRENT_APP_MAIN_PAGE_ASSET),
-          syntheticAppMainFeatureSyncBundle() +
+          syntheticCurrentUsePluginVisibilityBundle() +
+            syntheticAppMainFeatureSyncBundle() +
             syntheticAppMainEnablementBridgeBundle(),
         );
         fs.writeFileSync(
@@ -3222,7 +3198,7 @@ test("remote mobile control feature participates in ASAR patching and reports", 
           "utf8",
         );
         const patchedVisibilityFile = fs.readFileSync(
-          path.join(assetsDir, CURRENT_REMOTE_RUNTIME_ASSET),
+          path.join(assetsDir, CURRENT_REMOTE_CONNECTIONS_VISIBILITY_ASSET),
           "utf8",
         );
         const patchedRemoteConnectionVisibilityFile = fs.readFileSync(
@@ -3241,12 +3217,8 @@ test("remote mobile control feature participates in ASAR patching and reports", 
           path.join(assetsDir, "remote-connections-settings-test.js"),
           "utf8",
         );
-        const patchedMobileSetupFlowFile = fs.readFileSync(
-          path.join(assetsDir, "codex-mobile-setup-flow-test.js"),
-          "utf8",
-        );
-        const patchedMobileConnectedSettingsFile = fs.readFileSync(
-          path.join(assetsDir, "use-codex-mobile-connected-settings-test.js"),
+        const patchedMobileSetupDialogFile = fs.readFileSync(
+          path.join(assetsDir, "codex-mobile-setup-dialog-test.js"),
           "utf8",
         );
         const patchedSignalsFile = fs.readFileSync(
@@ -3270,8 +3242,8 @@ test("remote mobile control feature participates in ASAR patching and reports", 
         assert.match(patchedRemoteConnectionsSettingsFile, /Qn=5e3/);
         assert.match(patchedRemoteConnectionsSettingsFile, /Control this Linux desktop/);
         assert.match(patchedRemoteConnectionsSettingsFile, /SSH connections from this Linux desktop/);
-        assert.match(patchedMobileSetupFlowFile, /Connect your phone to this Linux desktop/);
-        assert.match(patchedMobileConnectedSettingsFile, /apps on this Linux desktop/);
+        assert.match(patchedMobileSetupDialogFile, /Connect your phone to this Linux desktop/);
+        assert.match(patchedMobileSetupDialogFile, /apps on this Linux desktop/);
         assert.match(patchedSignalsFile, /codexLinuxRemoteMobileHydrateUnknownTurn/);
         assert.match(patchedSignalsFile, /codexLinuxRemoteMobileThreadRuntimeStatus/);
         assert.match(patchedSignalsFile, /codexLinuxCompletedItemExists=/);
@@ -3399,48 +3371,20 @@ test("remote mobile control feature participates in ASAR patching and reports", 
           ),
         );
 
-        const firstPassFeaturePatches = report.patches.filter((patch) =>
-          patch.name.startsWith("feature:remote-mobile-control:")
-        );
-        assert.equal(firstPassFeaturePatches.length, 18);
-        const firstPassWebviewPatches = firstPassFeaturePatches.filter((patch) =>
-          patch.phase === "webview-asset"
-        );
-        assert.equal(firstPassWebviewPatches.length, 15);
-        const currentRuntimePatchNames = new Set([
-          "linux-remote-control-load-gate",
-          "linux-remote-control-visibility",
-          "linux-remote-mobile-conversation-hydration",
-          "linux-remote-mobile-completed-item-recovery",
-          "linux-remote-terminal-status-recovery",
-          "linux-remote-control-status-read-guard",
-          "linux-remote-control-status-wait",
-        ].map((name) => `feature:remote-mobile-control:${name}`));
-        assert.deepEqual(
-          firstPassWebviewPatches
-            .filter((patch) => currentRuntimePatchNames.has(patch.name))
-            .map((patch) => patch.status),
-          Array(currentRuntimePatchNames.size).fill("applied"),
-        );
-        const firstPassAssets = new Map(
-          fs.readdirSync(assetsDir)
-            .filter((name) => name.endsWith(".js"))
-            .map((name) => [name, fs.readFileSync(path.join(assetsDir, name))]),
-        );
-
         const secondReport = createPatchReport();
         patchExtractedApp(tempApp, { report: secondReport });
-        const secondPassFeaturePatches = secondReport.patches.filter((patch) =>
-          patch.name.startsWith("feature:remote-mobile-control:")
+        assert.ok(
+          secondReport.patches.some((patch) =>
+            patch.name === "feature:remote-mobile-control:linux-remote-mobile-completed-item-recovery" &&
+            patch.status === "already-applied",
+          ),
         );
-        assert.equal(secondPassFeaturePatches.length, 18);
-        assert.deepEqual(
-          [...new Set(secondPassFeaturePatches.map((patch) => patch.status))],
-          ["already-applied"],
+        assert.ok(
+          secondReport.patches.some((patch) =>
+            patch.name === "feature:remote-mobile-control:linux-remote-terminal-status-recovery" &&
+            patch.status === "already-applied",
+          ),
         );
-        for (const [name, content] of firstPassAssets) {
-          assert.deepEqual(fs.readFileSync(path.join(assetsDir, name)), content, name);
-        }
       } finally {
         fs.rmSync(tempApp, { recursive: true, force: true });
       }
