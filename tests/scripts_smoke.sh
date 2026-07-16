@@ -163,7 +163,7 @@ JSON
 {"name":"browser","version":"0.1.0-alpha2","interface":{"category":"Engineering"}}
 JSON
     cat > "$resources_dir/plugins/openai-bundled/plugins/browser/scripts/browser-client.mjs" <<'JS'
-function lu(e){let t=globalThis.nodeRepl?.env[e];return typeof t=="string"?t:void 0}function th(){let e=import.meta.__codexNativePipe;return e==null||typeof e.createConnection!="function"?null:e}var I2=new Set(["about:blank"]);function Gb(e){if(I2.has(e))return!0;let t;try{t=new URL(e)}catch{return!1}return t.protocol==="http:"||t.protocol==="https:"}class Uf{async fetchBlocked(e,t){let r=await bS(e.endpoint,{method:"GET"});if(!r.ok)throw new Error(ae(`${t} cannot determine if ${e.displayUrl} is allowed. Please try again later or use another source.`));let n=await r.json();return TF(n)}}var Cb=kE(hV.platform()),EV=()=>_P()==="win32"?TV():CV(),CV=async()=>(await yP(Cb)).map(e=>wP.resolve(Cb,e)),TV=async()=>[];export function setupAtlasRuntime() {}
+function lu(e){let t=globalThis.nodeRepl?.env[e];return typeof t=="string"?t:void 0}function th(){let e=import.meta.__codexNativePipe;return e==null||typeof e.createConnection!="function"?null:e}var I2=new Set(["about:blank"]);function Gb(e){if(I2.has(e))return!0;let t;try{t=new URL(e)}catch{return!1}return t.protocol==="http:"||t.protocol==="https:"}class Uf{async fetchBlocked(e,t){let r=await bS(e.endpoint,{method:"GET"});if(!r.ok)throw new Error(ae(`${t} cannot determine if ${e.displayUrl} is allowed. Please try again later or use another source.`));let n=await r.json();return TF(n)}}var kE=t=>t==="win32"?"\\\\.\\pipe\\codex-browser-use":"/tmp/codex-browser-use";var Cb=kE(hV.platform()),EV=()=>_P()==="win32"?TV():CV(),CV=async()=>(await yP(Cb)).map(e=>wP.resolve(Cb,e)),TV=async()=>[];export function setupAtlasRuntime() {}
 JS
 }
 
@@ -7296,6 +7296,10 @@ test_browser_plugin_renamed_upstream_staging() {
     assert_contains "$browser_dir/scripts/browser-client.mjs" "codexLinuxSiteStatusAllowlistFallback"
     assert_contains "$browser_dir/scripts/browser-client.mjs" "codexLinuxFileUrlPolicy"
     assert_contains "$browser_dir/scripts/browser-client.mjs" "codexLinuxIabSocketScope"
+    assert_contains "$browser_dir/scripts/browser-client.mjs" "codexLinuxPerUserBrowserSocketDir"
+    assert_contains "$browser_dir/scripts/browser-client.mjs" "codexLinuxBrowserUseUserInfo"
+    assert_not_contains "$browser_dir/scripts/browser-client.mjs" "process.env.CODEX_BROWSER_USE_SOCKET_DIR"
+    assert_not_contains "$browser_dir/scripts/browser-client.mjs" '"/tmp/codex-browser-use"'
     assert_contains "$browser_dir/scripts/browser-client.mjs" 'protocol==="file:"'
     assert_not_contains "$browser_dir/scripts/browser-client.mjs" 'protocol==="data:"'
     assert_contains "$marketplace" '"name": "browser"'
@@ -7944,7 +7948,7 @@ MD
 JSON
     cat > "$chrome_dir/scripts/browser-client.mjs" <<'JS'
 const browserPreference={};function preferredWindowIdFor(){}function getForUrl(){}const extensionInstanceId=null;
-var Cb=kE(hV.platform()),EV=()=>_P()==="win32"?TV():CV(),CV=async()=>(await yP(Cb)).map(e=>wP.resolve(Cb,e)),TV=async()=>[];
+var kE=t=>t==="win32"?"\\\\.\\pipe\\codex-browser-use":"/tmp/codex-browser-use";var Cb=kE(hV.platform()),EV=()=>_P()==="win32"?TV():CV(),CV=async()=>(await yP(Cb)).map(e=>wP.resolve(Cb,e)),TV=async()=>[];
 function lu(e){let t=globalThis.nodeRepl?.env[e];return typeof t=="string"?t:void 0}
 function Me(){let e=globalThis.nodeRepl;return e?.config==null?void 0:e}
 import{platform as yT}from"node:os";function eh(){return"privileged native pipe bridge is not available; browser-client is not trusted"}function th(){let e=globalThis.nodeRepl?.nativePipe;return e==null||typeof e.createConnection!="function"?null:e}var ml=class e{constructor(t){this.socket=t}static async create(t){let r=th();if(r!=null){let n=await r.createConnection(t);return new e(n)}throw new Error(eh())}};
@@ -8139,6 +8143,10 @@ test_chrome_plugin_staging() {
     assert_not_contains "$chrome_dir/scripts/browser-client.mjs" "codexLinuxNativePipeFallback"
     assert_not_contains "$chrome_dir/scripts/browser-client.mjs" 'await import("node:net")'
     assert_contains "$chrome_dir/scripts/browser-client.mjs" "codexLinuxSiteStatusAllowlistFallback"
+    assert_contains "$chrome_dir/scripts/browser-client.mjs" "codexLinuxPerUserBrowserSocketDir"
+    assert_contains "$chrome_dir/scripts/browser-client.mjs" "codexLinuxBrowserUseUserInfo"
+    assert_not_contains "$chrome_dir/scripts/browser-client.mjs" "process.env.CODEX_BROWSER_USE_SOCKET_DIR"
+    assert_not_contains "$chrome_dir/scripts/browser-client.mjs" '"/tmp/codex-browser-use"'
     assert_not_contains "$chrome_dir/scripts/browser-client.mjs" "codexLinuxIabSocketScope"
     assert_contains "$chrome_dir/skills/control-chrome/SKILL.md" "agent.browsers.list()"
     assert_contains "$chrome_dir/skills/control-chrome/SKILL.md" "browser.tabs.new()"

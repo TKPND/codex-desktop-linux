@@ -14,10 +14,14 @@ on:
       - scripts/ci/upstream-dmg-*.js
       - scripts/validate-upstream-dmg.js
       - scripts/lib/candidate-install.sh
+      - scripts/lib/bundled-plugins.sh
+      - scripts/lib/browser-client-node-repl-runtime.test.js
+      - scripts/lib/patch-browser-client-iab-socket-scope.js
       - scripts/lib/patch-validation.js
       - scripts/lib/upstream-dmg-acceptance.js
       - scripts/lib/upstream-dmg-release-profile.js
       - scripts/lib/linux-features.js
+      - computer-use-linux/src/bin/codex-chrome-extension-host.rs
       - linux-features/**
       - .github/workflows/upstream-build-app.yml
   push:
@@ -33,10 +37,14 @@ on:
       - scripts/ci/upstream-dmg-*.js
       - scripts/validate-upstream-dmg.js
       - scripts/lib/candidate-install.sh
+      - scripts/lib/bundled-plugins.sh
+      - scripts/lib/browser-client-node-repl-runtime.test.js
+      - scripts/lib/patch-browser-client-iab-socket-scope.js
       - scripts/lib/patch-validation.js
       - scripts/lib/upstream-dmg-acceptance.js
       - scripts/lib/upstream-dmg-release-profile.js
       - scripts/lib/linux-features.js
+      - computer-use-linux/src/bin/codex-chrome-extension-host.rs
       - linux-features/**
       - .github/workflows/upstream-build-app.yml
   workflow_dispatch:
@@ -163,6 +171,13 @@ jobs:
           CODEX_UPSTREAM_DMG_METADATA_JSON: ${{ github.workspace }}/upstream-dmg-metadata.json
           REBUILD_REPORT_DIR: ${{ github.workspace }}/upstream-acceptance
         run: make build-app DMG=/tmp/codex-upstream-ci/Codex.dmg
+
+      - name: Import staged Browser clients through node_repl
+        if: steps.acceptance-build.outcome == 'success'
+        env:
+          CODEX_NODE_REPL_PATH: ${{ github.workspace }}/codex-app/resources/node_repl
+          CODEX_STAGED_BUNDLED_PLUGINS_ROOT: ${{ github.workspace }}/codex-app/resources/plugins/openai-bundled/plugins
+        run: node --test scripts/lib/browser-client-node-repl-runtime.test.js
 
       - name: Upload upstream DMG metadata artifact
         # The transactional installer records a decision before returning a
