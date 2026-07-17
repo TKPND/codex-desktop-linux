@@ -2,7 +2,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { once } = require("node:events");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
@@ -21,7 +23,9 @@ const {
   buildDeterministicResponse,
   defaultRuntime,
   frameJsonRpc,
+  recoverStaleSocket,
   resolveRuntimePaths,
+  validateCommand,
 } = emulator.__test;
 
 const {
@@ -57,6 +61,43 @@ function withFeatureConfig(enabled, callback) {
     else process.env.CODEX_LINUX_FEATURES_CONFIG = previous;
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+async function withStartedRuntime(callback, options = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-runtime-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "codex-micro-emulator.sock"),
+    autoStart: false,
+    ...options,
+  });
+  try {
+    await runtime.start();
+    return await callback(runtime);
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function socketCommand(socketPath, request) {
+  return socketLine(socketPath, Buffer.from(`${JSON.stringify(request)}\n`));
+}
+
+function socketLine(socketPath, line) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let buffer = "";
+    socket.once("error", reject);
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      socket.end();
+      resolve(JSON.parse(buffer.slice(0, newline)));
+    });
+    socket.once("connect", () => socket.write(line));
+  });
 }
 
 function currentMainBundleFixture() {
@@ -326,10 +367,241 @@ test("fake discovery and communication implement upstream lifecycle and RPC", as
   }
 });
 
-test("module singleton stays non-advertising until the socket task activates it", () => {
+test("module singleton advertises only after private startup resolves", async () => {
+  assert.equal(await defaultRuntime.startPromise, true);
   const options = emulator.createOptions();
   assert.deepEqual(Object.keys(options).sort(), ["createComm", "discovery"]);
-  assert.equal(defaultRuntime.desiredConnected, false);
-  assert.equal(defaultRuntime.trace, null);
-  assert.deepEqual(options.discovery.findWLDevices(["project_2077"]), []);
+  assert.equal(defaultRuntime.desiredConnected, true);
+  assert.notEqual(defaultRuntime.trace, null);
+  assert.equal(fs.statSync(defaultRuntime.socketPath).isSocket(), true);
+  assert.equal(options.discovery.findWLDevices(["project_2077"]).length, 1);
+});
+
+test("socket path and files use private permissions", async () => {
+  await withStartedRuntime(async (runtime) => {
+    assert.equal(fs.statSync(path.dirname(runtime.socketPath)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(runtime.socketPath).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(runtime.trace.logPath).mode & 0o777, 0o600);
+  });
+});
+
+test("typed key, encoder, and joystick commands reach only registered upstream methods", async () => {
+  await withStartedRuntime(async (runtime) => {
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    const [device] = options.discovery.findWLDevices(["project_2077"]);
+    await comm.connect(device);
+    const notifications = [];
+    comm.addNotifyHandler("v.oai.hid", (params) => notifications.push(["hid", params]));
+    comm.addNotifyHandler("v.oai.rad", (params) => notifications.push(["rad", params]));
+
+    assert.equal((await socketCommand(runtime.socketPath, { command: "key", key: "AG00", action: "press" })).ok, true);
+    assert.equal((await socketCommand(runtime.socketPath, { command: "key", key: "ENC_SW", action: "tap" })).ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    assert.equal((await socketCommand(runtime.socketPath, { command: "encoder", direction: "ccw", steps: 2 })).ok, true);
+    assert.equal((await socketCommand(runtime.socketPath, { command: "joystick", direction: "up" })).ok, true);
+    for (const direction of ["right", "down", "left", "center"]) {
+      assert.equal((await socketCommand(runtime.socketPath, { command: "joystick", direction })).ok, true);
+    }
+    assert.deepEqual(notifications, [
+      ["hid", { k: "AG00", act: 1 }],
+      ["hid", { k: "ENC_SW", act: 1 }],
+      ["hid", { k: "ENC_SW", act: 0 }],
+      ["hid", { k: "ENC_CC", act: 2 }],
+      ["hid", { k: "ENC_CC", act: 2 }],
+      ["rad", { a: 0.75, d: 1 }],
+      ["rad", { a: 0, d: 1 }],
+      ["rad", { a: 0.25, d: 1 }],
+      ["rad", { a: 0.5, d: 1 }],
+      ["rad", { a: 0, d: 0 }],
+    ]);
+  });
+});
+
+test("invalid, oversized, and disconnected commands are rejected without dispatch", async () => {
+  await withStartedRuntime(async (runtime) => {
+    const invalid = await socketCommand(runtime.socketPath, { command: "key", key: "F13", action: "press" });
+    assert.equal(invalid.error.code, "invalid_key");
+    const malformed = await socketLine(runtime.socketPath, Buffer.from("{bad\n"));
+    assert.equal(malformed.error.code, "malformed_json");
+    const disconnected = await socketCommand(runtime.socketPath, { command: "key", key: "AG00", action: "press" });
+    assert.equal(disconnected.error.code, "disconnected");
+    const oversized = await socketLine(runtime.socketPath, Buffer.from(`${"あ".repeat(5_462)}\n`));
+    assert.equal(oversized.error.code, "line_too_large");
+  });
+});
+
+test("command validation rejects unknown fields and normalizes encoder steps", () => {
+  assert.deepEqual(validateCommand({ command: "encoder", direction: "cw" }), {
+    ok: true,
+    value: { command: "encoder", direction: "cw", steps: 1 },
+  });
+  assert.equal(validateCommand({ command: "status", method: "device.status" }).error.code, "invalid_command");
+  assert.equal(validateCommand({ command: "encoder", direction: "cw", steps: 0 }).error.code, "invalid_steps");
+  assert.equal(validateCommand({ command: "joystick", direction: "north" }).error.code, "invalid_direction");
+  assert.equal(validateCommand({ command: "key", key: "AG00", action: "hold" }).error.code, "invalid_action");
+  assert.equal(validateCommand(Object.create(null)).error.code, "invalid_command");
+});
+
+test("disconnect hides discovery and connect restores it for retry", async () => {
+  await withStartedRuntime(async (runtime) => {
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    assert.equal((await socketCommand(runtime.socketPath, { command: "disconnect" })).ok, true);
+    assert.deepEqual(options.discovery.findWLDevices(["project_2077"]), []);
+    assert.equal((await socketCommand(runtime.socketPath, { command: "connect" })).ok, true);
+    assert.equal(options.discovery.findWLDevices(["project_2077"]).length, 1);
+    const reconnected = options.createComm();
+    assert.equal(await reconnected.connect(options.discovery.findWLDevices(["project_2077"])[0]), true);
+    assert.equal(reconnected.isConnected(), true);
+  });
+});
+
+test("watch acknowledges before streaming raw trace records", async () => {
+  await withStartedRuntime(async (runtime) => {
+    const records = await new Promise((resolve, reject) => {
+      const socket = net.createConnection(runtime.socketPath);
+      let buffer = "";
+      const lines = [];
+      socket.once("error", reject);
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        let newline;
+        while ((newline = buffer.indexOf("\n")) !== -1) {
+          lines.push(JSON.parse(buffer.slice(0, newline)));
+          buffer = buffer.slice(newline + 1);
+          if (lines.length === 1) runtime.record("connection", { state: "watch-test" });
+          if (lines.length === 2) {
+            socket.end();
+            resolve(lines);
+          }
+        }
+      });
+      socket.once("connect", () => socket.write('{"command":"watch"}\n'));
+    });
+    assert.deepEqual(records[0], { ok: true, result: { watching: true, session: runtime.session } });
+    assert.equal(records[1].type, "connection");
+    assert.equal(records[1].state, "watch-test");
+  });
+});
+
+test("stale recovery rejects a live socket without stealing its path", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-live-socket-"));
+  const socketPath = path.join(root, "emulator.sock");
+  const server = net.createServer();
+  try {
+    server.listen(socketPath);
+    await once(server, "listening");
+    await assert.rejects(recoverStaleSocket({ socketPath }), /already active/);
+    const accepted = once(server, "connection");
+    const client = net.createConnection(socketPath);
+    await once(client, "connect");
+    const [acceptedClient] = await accepted;
+    client.destroy();
+    acceptedClient.destroy();
+  } finally {
+    if (server.listening) {
+      server.close();
+      await once(server, "close");
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("closeSync preserves a replacement whose socket identity changed", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-identity-"));
+  const socketPath = path.join(root, "runtime", "codex-desktop", "emulator.sock");
+  const unlinks = [];
+  const fsImpl = Object.create(fs);
+  fsImpl.unlinkSync = (target) => {
+    unlinks.push(target);
+    return fs.unlinkSync(target);
+  };
+  const runtime = new CodexMicroEmulatorRuntime({
+    fsImpl,
+    stateDir: path.join(root, "state"),
+    socketPath,
+    autoStart: false,
+  });
+  try {
+    await runtime.start();
+    const originalLstat = fsImpl.lstatSync.bind(fsImpl);
+    fsImpl.lstatSync = (target) => {
+      const stat = originalLstat(target);
+      return target === socketPath ? Object.assign(Object.create(stat), { ino: stat.ino + 1 }) : stat;
+    };
+    const server = runtime.server;
+    runtime.closeSync();
+    if (server.listening) await once(server, "close");
+    assert.deepEqual(unlinks.filter((target) => target === socketPath), []);
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("trace failure closes discovery and communication before later input dispatch", async () => {
+  let failAppend = false;
+  const fsImpl = Object.create(fs);
+  fsImpl.appendFileSync = (...args) => {
+    if (failAppend) throw new Error("simulated trace failure");
+    return fs.appendFileSync(...args);
+  };
+  await withStartedRuntime(async (runtime) => {
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    const events = [];
+    const notifications = [];
+    comm.onConnectionEvent((event) => events.push(event.type));
+    comm.addNotifyHandler("v.oai.hid", (params) => notifications.push(params));
+    failAppend = true;
+
+    const failed = await socketCommand(runtime.socketPath, { command: "key", key: "AG00", action: "press" });
+    assert.ok(["trace_failed", "disconnected"].includes(failed.error.code));
+    assert.deepEqual(events, [2]);
+    assert.equal(runtime.state, "error");
+    assert.equal(comm.isConnected(), false);
+    assert.deepEqual(options.discovery.findWLDevices(["project_2077"]), []);
+    const later = await socketCommand(runtime.socketPath, { command: "key", key: "AG00", action: "press" });
+    assert.ok(["trace_failed", "disconnected"].includes(later.error.code));
+    assert.deepEqual(notifications, []);
+  }, { fsImpl });
+});
+
+test("close releases its socket even when the disconnect trace append fails", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-close-failure-"));
+  const socketPath = path.join(root, "runtime", "codex-desktop", "emulator.sock");
+  let failAppend = false;
+  const fsImpl = Object.create(fs);
+  fsImpl.appendFileSync = (...args) => {
+    if (failAppend) throw new Error("simulated close trace failure");
+    return fs.appendFileSync(...args);
+  };
+  const runtime = new CodexMicroEmulatorRuntime({
+    fsImpl,
+    stateDir: path.join(root, "state"),
+    socketPath,
+    autoStart: false,
+  });
+  let server;
+  try {
+    await runtime.start();
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    server = runtime.server;
+    failAppend = true;
+    await assert.rejects(runtime.close(), /simulated close trace failure/);
+    assert.equal(runtime.server, null);
+    assert.equal(server.listening, false);
+    assert.equal(fs.existsSync(socketPath), false);
+  } finally {
+    if (server?.listening) {
+      server.close();
+      await once(server, "close");
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

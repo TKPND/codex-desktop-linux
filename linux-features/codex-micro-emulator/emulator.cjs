@@ -17,6 +17,22 @@ const PREVIOUS_TRACE_FILES = 2;
 const MAX_SOCKET_LINE_BYTES = 16_384;
 const TAP_DELAY_MS = 50;
 
+const ALLOWED_KEYS = new Set([
+  "AG00", "AG01", "AG02", "AG03", "AG04", "AG05",
+  "ACT06", "ACT07", "ACT08", "ACT09", "ACT10", "ACT11", "ACT12",
+  "ENC_SW",
+]);
+const KEY_ACTIONS = new Set(["press", "release", "tap"]);
+const ENCODER_DIRECTIONS = new Set(["cw", "ccw"]);
+const JOYSTICK = Object.freeze({
+  up: Object.freeze({ a: 0.75, d: 1 }),
+  right: Object.freeze({ a: 0, d: 1 }),
+  down: Object.freeze({ a: 0.25, d: 1 }),
+  left: Object.freeze({ a: 0.5, d: 1 }),
+  center: Object.freeze({ a: 0, d: 0 }),
+});
+const NOTIFICATION_METHODS = new Set(["v.oai.hid", "v.oai.rad"]);
+
 const TRACE_TYPES = new Set([
   "session",
   "connection",
@@ -47,6 +63,121 @@ function resolveRuntimePaths(env = process.env) {
     socketParent: path.join(env.XDG_RUNTIME_DIR, "codex-desktop"),
     socketPath: path.join(env.XDG_RUNTIME_DIR, "codex-desktop", "codex-micro-emulator.sock"),
   };
+}
+
+function commandError(code, message) {
+  return { ok: false, error: { code, message } };
+}
+
+function hasExactKeys(value, required, optional = []) {
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    keys.every((key) => allowed.has(key));
+}
+
+function validateCommand(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) {
+    return commandError("invalid_command", "Command must be a plain object");
+  }
+
+  switch (value.command) {
+    case "status":
+    case "watch":
+    case "connect":
+    case "disconnect":
+      if (!hasExactKeys(value, ["command"])) {
+        return commandError("invalid_command", `Unknown field for ${value.command} command`);
+      }
+      return { ok: true, value: { command: value.command } };
+    case "key":
+      if (!hasExactKeys(value, ["command", "key", "action"])) {
+        return commandError("invalid_command", "Key command requires only command, key, and action");
+      }
+      if (!ALLOWED_KEYS.has(value.key)) {
+        return commandError("invalid_key", `Unsupported key: ${String(value.key)}`);
+      }
+      if (!KEY_ACTIONS.has(value.action)) {
+        return commandError("invalid_action", `Unsupported key action: ${String(value.action)}`);
+      }
+      return { ok: true, value: { command: "key", key: value.key, action: value.action } };
+    case "encoder": {
+      if (!hasExactKeys(value, ["command", "direction"], ["steps"])) {
+        return commandError("invalid_command", "Encoder command requires direction and optional steps");
+      }
+      if (!ENCODER_DIRECTIONS.has(value.direction)) {
+        return commandError("invalid_direction", `Unsupported encoder direction: ${String(value.direction)}`);
+      }
+      const steps = value.steps ?? 1;
+      if (!Number.isInteger(steps) || steps < 1 || steps > 100) {
+        return commandError("invalid_steps", "Encoder steps must be an integer from 1 through 100");
+      }
+      return { ok: true, value: { command: "encoder", direction: value.direction, steps } };
+    }
+    case "joystick":
+      if (!hasExactKeys(value, ["command", "direction"])) {
+        return commandError("invalid_command", "Joystick command requires only command and direction");
+      }
+      if (!Object.hasOwn(JOYSTICK, value.direction)) {
+        return commandError("invalid_direction", `Unsupported joystick direction: ${String(value.direction)}`);
+      }
+      return { ok: true, value: { command: "joystick", direction: value.direction } };
+    default:
+      return commandError("invalid_command", `Unsupported command: ${String(value.command)}`);
+  }
+}
+
+function lstatIfPresent(socketPath, fsImpl) {
+  try {
+    return fsImpl.lstatSync(socketPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function sameIdentity(left, right) {
+  return left != null && right != null && left.dev === right.dev && left.ino === right.ino;
+}
+
+async function recoverStaleSocket({ socketPath, fsImpl = fs, netImpl = net }) {
+  const original = lstatIfPresent(socketPath, fsImpl);
+  if (!original) return;
+  if (!original.isSocket()) {
+    throw new Error("Codex Micro emulator socket path is not a socket");
+  }
+  if (typeof process.getuid === "function" && original.uid !== process.getuid()) {
+    throw new Error("Codex Micro emulator socket is owned by another user");
+  }
+
+  const outcome = await new Promise((resolve) => {
+    const probe = netImpl.createConnection(socketPath);
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      probe.removeAllListeners("connect");
+      probe.removeAllListeners("error");
+      probe.destroy?.();
+      resolve(result);
+    };
+    probe.once("connect", () => finish({ active: true }));
+    probe.once("error", (error) => finish({ error }));
+  });
+
+  if (outcome.active) {
+    throw new Error("Codex Micro emulator socket is already active");
+  }
+  if (outcome.error?.code === "ENOENT") return;
+  if (outcome.error?.code !== "ECONNREFUSED") throw outcome.error;
+
+  const current = lstatIfPresent(socketPath, fsImpl);
+  if (!current) return;
+  if (!sameIdentity(original, current)) {
+    throw new Error("Codex Micro emulator socket changed during stale recovery");
+  }
+  fsImpl.unlinkSync(socketPath);
 }
 
 function frameJsonRpc(raw, rpcId) {
@@ -275,6 +406,7 @@ class FakeWLDeviceComm {
     }
     this.runtime.currentComm = this;
     this.connected = true;
+    this.runtime.state = "connected";
     this.runtime.record("connection", { state: "connected" });
     this.emitConnectionEvent(0);
     return true;
@@ -289,6 +421,7 @@ class FakeWLDeviceComm {
     this.connected = false;
     this.notifyHandlers.clear();
     if (this.runtime.currentComm === this) this.runtime.currentComm = null;
+    this.runtime.state = this.runtime.desiredConnected ? "discoverable" : "disconnected";
     if (this.runtime.trace && !this.runtime.trace.failed && !this.runtime.trace.closed) {
       this.runtime.record("connection", { state: "disconnected" });
     }
@@ -383,6 +516,8 @@ class CodexMicroEmulatorRuntime {
     this.server = null;
     this.clients = new Set();
     this.pendingTimers = new Set();
+    this.socketIdentity = null;
+    this._startingPromise = null;
     this.closed = false;
   }
 
@@ -417,6 +552,237 @@ class CodexMicroEmulatorRuntime {
     };
   }
 
+  start() {
+    if (this.closed) return Promise.reject(new Error("Codex Micro emulator runtime is closed"));
+    if (this.state === "discoverable" || this.state === "connected" || this.state === "disconnected") {
+      return Promise.resolve(true);
+    }
+    if (this._startingPromise) return this._startingPromise;
+    this._startingPromise = this.startInternal().finally(() => {
+      this._startingPromise = null;
+    });
+    return this._startingPromise;
+  }
+
+  async startInternal() {
+    this.state = "starting";
+    try {
+      this.initializeTrace();
+      this.fs.mkdirSync(this.socketParent, { recursive: true, mode: 0o700 });
+      this.fs.chmodSync(this.socketParent, 0o700);
+      await recoverStaleSocket({ socketPath: this.socketPath, fsImpl: this.fs, netImpl: this.net });
+
+      const server = this.net.createServer((socket) => this.acceptClient(socket));
+      this.server = server;
+      let starting = true;
+      server.on("error", (error) => {
+        if (!starting) this.handleSocketFailure(error);
+      });
+      await new Promise((resolve, reject) => {
+        const onError = (error) => {
+          server.removeListener("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.removeListener("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(this.socketPath);
+      });
+      starting = false;
+      this.fs.chmodSync(this.socketPath, 0o600);
+      const socketStat = this.fs.lstatSync(this.socketPath);
+      this.socketIdentity = { dev: socketStat.dev, ino: socketStat.ino };
+      this.state = "discoverable";
+      this.desiredConnected = true;
+      this.record("connection", { state: "discoverable" });
+      return true;
+    } catch (error) {
+      if (this.trace && !this.trace.failed && !this.trace.closed) {
+        try {
+          this.record("connection", { state: "error", error: error instanceof Error ? error.message : String(error) });
+        } catch {
+          // The trace fatal callback has already closed discovery and communication.
+        }
+      }
+      this.fail(error);
+      await this.stopSocketServer();
+      this.unlinkOwnedSocket();
+      throw error;
+    }
+  }
+
+  acceptClient(socket) {
+    this.clients.add(socket);
+    let buffer = Buffer.alloc(0);
+    let ended = false;
+    let processing = Promise.resolve();
+    const cleanup = () => this.clients.delete(socket);
+    socket.once("close", cleanup);
+    socket.once("error", cleanup);
+    socket.on("data", (chunk) => {
+      if (ended) return;
+      buffer = Buffer.concat([buffer, chunk]);
+      let newline;
+      while ((newline = buffer.indexOf(0x0a)) !== -1) {
+        const line = buffer.subarray(0, newline);
+        buffer = buffer.subarray(newline + 1);
+        if (line.length > MAX_SOCKET_LINE_BYTES) {
+          ended = true;
+          processing = processing.then(() => this.endClientWithError(socket, "line_too_large", "Socket line exceeds 16384 bytes"));
+          return;
+        }
+        processing = processing.then(() => this.processSocketLine(socket, line));
+      }
+      if (buffer.length > MAX_SOCKET_LINE_BYTES) {
+        ended = true;
+        processing = processing.then(() => this.endClientWithError(socket, "line_too_large", "Socket line exceeds 16384 bytes"));
+      }
+    });
+  }
+
+  writeSocketResponse(socket, response) {
+    if (socket.destroyed) return;
+    socket.write(`${JSON.stringify(response)}\n`);
+  }
+
+  endClientWithError(socket, code, message) {
+    if (socket.destroyed) return;
+    socket.end(`${JSON.stringify(commandError(code, message))}\n`);
+  }
+
+  async processSocketLine(socket, line) {
+    let parsed;
+    try {
+      parsed = JSON.parse(line.toString("utf8"));
+    } catch {
+      this.writeSocketResponse(socket, commandError("malformed_json", "Socket line is not valid JSON"));
+      return;
+    }
+    const validated = validateCommand(parsed);
+    if (!validated.ok) {
+      this.writeSocketResponse(socket, validated);
+      return;
+    }
+    try {
+      const response = await this.dispatchCommand(socket, validated.value);
+      if (response != null) this.writeSocketResponse(socket, response);
+    } catch (error) {
+      const traceFailed = this.trace?.failed || this.state === "error" && /trace/i.test(this.error ?? "");
+      this.writeSocketResponse(socket, commandError(
+        traceFailed ? "trace_failed" : "internal_error",
+        error instanceof Error ? error.message : String(error),
+      ));
+    }
+  }
+
+  async dispatchCommand(socket, command) {
+    switch (command.command) {
+      case "status": return { ok: true, result: this.status() };
+      case "watch": return this.beginWatch(socket);
+      case "connect": return this.requestConnect();
+      case "disconnect": return this.requestDisconnect();
+      case "key": return this.sendKey(command.key, command.action);
+      case "encoder": return this.sendEncoder(command.direction, command.steps);
+      case "joystick": return this.sendJoystick(command.direction);
+      default: return commandError("invalid_command", "Unsupported command");
+    }
+  }
+
+  beginWatch(socket) {
+    if (!this.trace || this.trace.failed || this.trace.closed) {
+      this.writeSocketResponse(socket, commandError("trace_failed", "Trace is unavailable"));
+      return null;
+    }
+    this.writeSocketResponse(socket, { ok: true, result: { watching: true, session: this.session } });
+    const unsubscribe = this.trace.subscribe((_record, line) => {
+      if (!socket.destroyed) socket.write(line);
+    });
+    let active = true;
+    const cleanup = () => {
+      if (!active) return;
+      active = false;
+      unsubscribe();
+    };
+    socket.once("close", cleanup);
+    socket.once("error", cleanup);
+    return null;
+  }
+
+  requestConnect() {
+    if (!this.isHealthy()) {
+      return commandError(this.trace?.failed ? "trace_failed" : "disconnected", "Emulator is unavailable");
+    }
+    this.desiredConnected = true;
+    this.state = "discoverable";
+    this.record("connection", { state: "discoverable" });
+    return { ok: true, result: this.status() };
+  }
+
+  async requestDisconnect() {
+    if (this.state === "error") {
+      return commandError(this.trace?.failed ? "trace_failed" : "disconnected", "Emulator is unavailable");
+    }
+    this.desiredConnected = false;
+    this.state = "disconnected";
+    const comm = this.currentComm;
+    if (comm) await comm.forceDisconnect();
+    else this.record("connection", { state: "disconnected" });
+    return { ok: true, result: this.status() };
+  }
+
+  inputUnavailable() {
+    if (this.trace?.failed || this.state === "error") {
+      return commandError("trace_failed", "Trace is unavailable");
+    }
+    return commandError("disconnected", "No connected communication handler is available");
+  }
+
+  sendKey(key, action) {
+    if (!this.currentComm?.isConnected() || !this.currentComm.hasNotifyHandler("v.oai.hid")) {
+      return this.inputUnavailable();
+    }
+    if (action !== "tap") {
+      if (!this.dispatchNotification("v.oai.hid", { k: key, act: action === "press" ? 1 : 0 })) {
+        return this.inputUnavailable();
+      }
+      return { ok: true, result: { sent: true } };
+    }
+    if (!this.dispatchNotification("v.oai.hid", { k: key, act: 1 })) return this.inputUnavailable();
+    const timer = this.setTimer(() => {
+      this.pendingTimers.delete(timer);
+      if (!this.currentComm?.isConnected()) return;
+      try {
+        this.dispatchNotification("v.oai.hid", { k: key, act: 0 });
+      } catch (error) {
+        this.fail(error);
+      }
+    }, TAP_DELAY_MS);
+    this.pendingTimers.add(timer);
+    return { ok: true, result: { sent: true } };
+  }
+
+  sendEncoder(direction, steps) {
+    if (!this.currentComm?.isConnected() || !this.currentComm.hasNotifyHandler("v.oai.hid")) {
+      return this.inputUnavailable();
+    }
+    const key = direction === "cw" ? "ENC_CW" : "ENC_CC";
+    for (let step = 0; step < steps; step += 1) {
+      if (!this.dispatchNotification("v.oai.hid", { k: key, act: 2 })) return this.inputUnavailable();
+    }
+    return { ok: true, result: { sent: steps } };
+  }
+
+  sendJoystick(direction) {
+    if (!this.currentComm?.isConnected() || !this.currentComm.hasNotifyHandler("v.oai.rad")) {
+      return this.inputUnavailable();
+    }
+    if (!this.dispatchNotification("v.oai.rad", { ...JOYSTICK[direction] })) return this.inputUnavailable();
+    return { ok: true, result: { sent: true } };
+  }
+
   record(type, fields) {
     if (!this.trace) {
       const error = new Error("Codex Micro trace is not initialized");
@@ -432,6 +798,7 @@ class CodexMicroEmulatorRuntime {
   }
 
   dispatchNotification(method, params) {
+    if (!NOTIFICATION_METHODS.has(method)) return false;
     const comm = this.currentComm;
     if (!comm?.isConnected() || !comm.hasNotifyHandler(method)) return false;
     this.record("notify.rx", { method, params });
@@ -443,9 +810,22 @@ class CodexMicroEmulatorRuntime {
     this.error = error instanceof Error ? error.message : String(error);
     this.state = "error";
     this.desiredConnected = false;
+    this.clearPendingTimers();
     const comm = this.currentComm;
     this.currentComm = null;
     comm?.forceError(new Error(this.error));
+  }
+
+  handleSocketFailure(error) {
+    if (this.state === "error" || this.closed) return;
+    if (this.trace && !this.trace.failed && !this.trace.closed) {
+      try {
+        this.record("connection", { state: "error", error: error instanceof Error ? error.message : String(error) });
+      } catch {
+        return;
+      }
+    }
+    this.fail(error);
   }
 
   status() {
@@ -465,6 +845,24 @@ class CodexMicroEmulatorRuntime {
     this.pendingTimers.clear();
   }
 
+  async stopSocketServer() {
+    for (const client of this.clients) client.destroy?.();
+    this.clients.clear();
+    const server = this.server;
+    this.server = null;
+    if (!server?.listening) return;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+
+  unlinkOwnedSocket() {
+    if (!this.socketIdentity) return;
+    const current = lstatIfPresent(this.socketPath, this.fs);
+    if (sameIdentity(this.socketIdentity, current)) this.fs.unlinkSync(this.socketPath);
+    this.socketIdentity = null;
+  }
+
   async close() {
     if (this.closed) return;
     this.closed = true;
@@ -472,17 +870,25 @@ class CodexMicroEmulatorRuntime {
     this.clearPendingTimers();
     const comm = this.currentComm;
     this.currentComm = null;
-    await comm?.forceDisconnect();
-    for (const client of this.clients) client.destroy?.();
-    this.clients.clear();
-    if (this.server?.listening) {
-      await new Promise((resolve, reject) => {
-        this.server.close((error) => error ? reject(error) : resolve());
-      });
+    let firstError = null;
+    try {
+      await comm?.forceDisconnect();
+    } catch (error) {
+      firstError = error;
     }
-    this.server = null;
+    try {
+      await this.stopSocketServer();
+    } catch (error) {
+      firstError ??= error;
+    }
+    try {
+      this.unlinkOwnedSocket();
+    } catch (error) {
+      firstError ??= error;
+    }
     this.trace?.close();
     this.state = "closed";
+    if (firstError) throw firstError;
   }
 
   closeSync() {
@@ -498,12 +904,21 @@ class CodexMicroEmulatorRuntime {
     }
     for (const client of this.clients) client.destroy?.();
     this.clients.clear();
+    const server = this.server;
+    this.server = null;
+    if (server?.listening) server.close();
+    this.unlinkOwnedSocket();
     this.trace?.close();
     this.state = "closed";
   }
 }
 
-const defaultRuntime = new CodexMicroEmulatorRuntime({ autoStart: false });
+const defaultRuntime = new CodexMicroEmulatorRuntime();
+defaultRuntime.startPromise = defaultRuntime.start().catch((error) => {
+  defaultRuntime.fail(error);
+  return false;
+});
+process.once("exit", () => defaultRuntime.closeSync());
 
 function createOptions() {
   return defaultRuntime.createOptions();
@@ -519,8 +934,8 @@ module.exports = {
     buildDeterministicResponse,
     defaultRuntime,
     frameJsonRpc,
-    recoverStaleSocket: undefined,
+    recoverStaleSocket,
     resolveRuntimePaths,
-    validateCommand: undefined,
+    validateCommand,
   },
 };
