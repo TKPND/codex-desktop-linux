@@ -41,10 +41,25 @@ def parse_response(line):
     if not line:
         raise RuntimeError("emulator closed the socket without a response")
     response = json.loads(line)
-    if not response.get("ok"):
-        error = response.get("error") or {}
-        raise RuntimeError(error.get("message") or error.get("code") or "emulator command failed")
-    return response.get("result") or {}
+    if not isinstance(response, dict):
+        raise RuntimeError("emulator returned a malformed response")
+    if response.get("ok") is False:
+        error = response.get("error")
+        if not isinstance(error, dict):
+            raise RuntimeError("emulator returned a malformed error response")
+        message = error.get("message")
+        code = error.get("code")
+        if isinstance(message, str) and message:
+            raise RuntimeError(message)
+        if isinstance(code, str) and code:
+            raise RuntimeError(code)
+        raise RuntimeError("emulator command failed")
+    if response.get("ok") is not True:
+        raise RuntimeError("emulator returned a malformed response")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("emulator returned a malformed result")
+    return result
 
 
 def send_request(request):
@@ -77,13 +92,24 @@ def boolean_text(value):
 
 
 def render_status(result):
-    discoverable = bool(result.get("desiredConnected")) and result.get("state") != "error"
+    if (
+        not isinstance(result.get("state"), str)
+        or not result["state"]
+        or not isinstance(result.get("connected"), bool)
+        or not isinstance(result.get("desiredConnected"), bool)
+        or not isinstance(result.get("logPath"), str)
+        or not result["logPath"]
+        or not isinstance(result.get("socketPath"), str)
+        or not result["socketPath"]
+    ):
+        raise RuntimeError("emulator returned a malformed status")
+    discoverable = result["desiredConnected"] and result["state"] != "error"
     return (
-        f"state={result.get('state')} "
-        f"connected={boolean_text(result.get('connected'))} "
+        f"state={result['state']} "
+        f"connected={boolean_text(result['connected'])} "
         f"discoverable={boolean_text(discoverable)} "
-        f"log={result.get('logPath')} "
-        f"socket={result.get('socketPath')}"
+        f"log={result['logPath']} "
+        f"socket={result['socketPath']}"
     )
 
 
@@ -152,7 +178,7 @@ def main():
         except OSError:
             pass
         return 0
-    except (FileNotFoundError, ConnectionRefusedError, json.JSONDecodeError, RuntimeError) as error:
+    except (OSError, json.JSONDecodeError, RuntimeError) as error:
         message = str(error).replace("\r", " ").replace("\n", " ")
         print(f"codex-micro-emulator: {message}", file=sys.stderr)
         return 1

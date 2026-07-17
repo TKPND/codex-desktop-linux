@@ -128,6 +128,37 @@ function waitFor(predicate, message, timeoutMs = 2_000) {
   });
 }
 
+async function withCliResponse(responseText, callback) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-cli-response-"));
+  const runtimeDir = path.join(root, "runtime");
+  const socketDir = path.join(runtimeDir, "codex-desktop");
+  const socketPath = path.join(socketDir, "codex-micro-emulator.sock");
+  fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+  const server = net.createServer((socket) => {
+    socket.once("data", () => socket.end(`${responseText}\n`));
+  });
+  try {
+    server.listen(socketPath);
+    await once(server, "listening");
+    return await callback({ runtimeDir, socketPath });
+  } finally {
+    if (server.listening) {
+      server.close();
+      await once(server, "close");
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function assertNormalizedCliFailure(result) {
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /^codex-micro-emulator: [^\r\n]+\n$/);
+  assert.doesNotMatch(result.stderr, /Traceback/);
+  assert.doesNotMatch(result.stderr, /None/);
+}
+
 function socketCommand(socketPath, request) {
   return socketLine(socketPath, Buffer.from(`${JSON.stringify(request)}\n`));
 }
@@ -613,6 +644,56 @@ test("CLI status and typed input use the runtime socket", { skip: PYTHON == null
   });
 });
 
+test("CLI normalizes broader socket OSError failures", { skip: PYTHON == null }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-cli-oserror-"));
+  const runtimeFile = path.join(root, "runtime-file");
+  fs.writeFileSync(runtimeFile, "not a directory");
+  try {
+    const result = await runCli(["status"], {
+      env: { ...process.env, XDG_RUNTIME_DIR: runtimeFile },
+    });
+    assertNormalizedCliFailure(result);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects a valid JSON response with a non-object top level", { skip: PYTHON == null }, async () => {
+  await withCliResponse("[]", async ({ runtimeDir }) => {
+    const result = await runCli(["status"], {
+      env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir },
+    });
+    assertNormalizedCliFailure(result);
+  });
+});
+
+test("CLI rejects a valid JSON response with a malformed error field", { skip: PYTHON == null }, async () => {
+  await withCliResponse('{"ok":false,"error":"denied"}', async ({ runtimeDir }) => {
+    const result = await runCli(["status"], {
+      env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir },
+    });
+    assertNormalizedCliFailure(result);
+  });
+});
+
+test("CLI rejects a valid JSON response with a malformed result field", { skip: PYTHON == null }, async () => {
+  await withCliResponse('{"ok":true,"result":[]}', async ({ runtimeDir }) => {
+    const result = await runCli(["status"], {
+      env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir },
+    });
+    assertNormalizedCliFailure(result);
+  });
+});
+
+test("CLI rejects an incomplete successful status without printing None fields", { skip: PYTHON == null }, async () => {
+  await withCliResponse('{"ok":true,"result":{"state":"connected","connected":true}}', async ({ runtimeDir }) => {
+    const result = await runCli(["status"], {
+      env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir },
+    });
+    assertNormalizedCliFailure(result);
+  });
+});
+
 test("CLI raw watch streams byte-preserved trace records and exits with its child", { skip: PYTHON == null }, async () => {
   await withStartedRuntime(async (runtime) => {
     const child = spawn(PYTHON, [CLI, "watch", "--raw"], {
@@ -646,6 +727,38 @@ test("CLI raw watch streams byte-preserved trace records and exits with its chil
       if (child.exitCode == null && child.signalCode == null) killed = child.kill("SIGTERM");
       await closed;
       if (killed) assert.equal(closedResult.signal, "SIGTERM", stderr);
+    }
+  });
+});
+
+test("CLI raw watch treats a closed stdout pipe as a clean exit", { skip: PYTHON == null }, async () => {
+  await withStartedRuntime(async (runtime) => {
+    const child = spawn(PYTHON, [CLI, "watch", "--raw"], {
+      env: cliEnv(runtime),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (status, signal) => resolve({ status, signal }));
+    });
+    let result;
+    try {
+      await waitFor(
+        () => runtime.trace.listeners.size === 1 || child.exitCode != null,
+        "CLI watch did not subscribe before the pipe was closed",
+      );
+      assert.equal(runtime.trace.listeners.size, 1, stderr);
+      child.stdout.destroy();
+      runtime.record("connection", { state: "broken-pipe", detail: "x".repeat(128 * 1024) });
+      await waitFor(() => child.exitCode != null, "CLI watch did not exit after BrokenPipeError");
+      result = await closed;
+      assert.deepEqual(result, { status: 0, signal: null });
+      assert.equal(stderr, "");
+    } finally {
+      if (child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");
+      if (result == null) await closed;
     }
   });
 });
