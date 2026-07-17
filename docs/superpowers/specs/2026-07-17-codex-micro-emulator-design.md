@@ -1,7 +1,7 @@
 # Codex Micro Emulator Design
 
 Date: 2026-07-17
-Status: Approved for implementation planning
+Status: Automatic bootstrap extension approved for implementation planning
 
 ## Summary
 
@@ -123,6 +123,15 @@ The patch adds options returned by the staged emulator module to the existing
 callback object. It does not patch webview assets or the upstream
 `codex-micro-service` chunk.
 
+The current renderer mounts `CodexMicroBridge` only when upstream availability
+allows it. That makes the service manager's normal `getState()` path lazy and
+prevents an emulator-only build from producing runtime evidence when the bridge
+does not mount. When this optional feature is enabled, the same main-bundle
+patch therefore also invokes the existing service manager `getState()` path
+once when that manager is constructed. This automatic bootstrap does not
+change the renderer bridge, the upstream Statsig gate `3207467860`, or any UI
+visibility decision.
+
 Conceptually, the resulting construction is:
 
 ```js
@@ -220,8 +229,11 @@ mode `0600`.
 
 ## Connection Lifecycle
 
-1. The Codex webview requests Codex Micro state.
-2. The main process loads the upstream service.
+1. The enabled feature automatically invokes the service manager's existing
+   `getState()` path once after that manager is constructed.
+2. The main process loads the upstream service. A later renderer `getState()`
+   request reuses the manager's existing `servicePromise` or `service` cache
+   rather than constructing a second service.
 3. The feature-supplied discovery object returns one virtual Project2077
    descriptor.
 4. The fake communication object's `connect()` marks itself connected and
@@ -229,8 +241,9 @@ mode `0600`.
 5. The real upstream API sends initial lighting and `device.status` requests.
 6. The fake communication object logs each request and returns a deterministic
    response.
-7. The service reports `connected` to the renderer, enabling the existing
-   Codex Micro bridge and settings behavior.
+7. The service publishes `connected` through its existing callbacks. A renderer
+   bridge observes that state only when upstream availability mounts the bridge;
+   automatic bootstrap does not make gated UI visible.
 8. CLI input is dispatched only while the virtual communication object is
    connected.
 9. `disconnect` emits the upstream disconnect event. `connect` makes the
@@ -384,15 +397,24 @@ structured error and are not delivered to upstream handlers.
 - Disconnect clears pending subscriptions and causes subsequent CLI input to
   fail until reconnect succeeds.
 - Cleanup is idempotent and may run after partial initialization.
+- Automatic bootstrap is fire-and-forget. A rejected `getState()` promise is
+  caught and written to the main-process log with a fixed Codex Micro emulator
+  prefix; it does not terminate Electron or create an unhandled rejection.
+- Bootstrap does not add a second service lifecycle. The existing service
+  manager owns creation, caching, stopping, and disposal.
 
 ## Testing Strategy
 
 ### Patch tests
 
 - Apply the descriptor to a current-shape main-bundle fixture.
-- Assert that exactly one emulator module load and options spread are added.
+- Assert that exactly one emulator module load, options spread, and automatic
+  service-manager bootstrap call are added.
 - Reapply the descriptor and assert byte-for-byte idempotence.
-- Remove or duplicate the constructor anchor and assert a drift result.
+- Remove or duplicate either the service constructor anchor or service-manager
+  constructor anchor and assert that the patch makes no partial change.
+- Exercise the bootstrap helper with a fake manager and assert one `getState()`
+  call, caught rejection logging, and no unhandled rejection.
 - Confirm unrelated main-bundle content remains unchanged.
 
 ### Runtime unit tests
@@ -429,11 +451,27 @@ structured error and are not delivered to upstream handlers.
 - Run `node --test linux-features/codex-micro-emulator/test.js`.
 - Run the relevant patcher regression suite.
 - Build a generated app with only `codex-micro-emulator` newly enabled.
-- Start the generated app, run `status` and `watch`, exercise connection and
-  input commands, and confirm initial `v.oai.rgbcfg`, `v.oai.thstatus`, and
-  `device.status` records appear.
+- Give the generated app a dedicated `CODEX_HOME`, `XDG_RUNTIME_DIR`,
+  `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` for runtime UAT.
+- Start the generated app without forcing the renderer gate, wait for the
+  private socket, and confirm `status` reaches connected state.
+- Run `watch --raw`, exercise typed key, encoder, and joystick commands, and
+  confirm `notify.rx` records appear in order.
+- Confirm initial `v.oai.rgbcfg`, `v.oai.thstatus`, and `device.status` requests
+  and their simulated `hid.frame` records appear.
+- Exercise `disconnect` and `connect`, then confirm the upstream retry path
+  returns the emulator to connected state.
+- Stop only the Electron PID published inside the isolated state root after its
+  `/proc/<pid>/exe` resolves to the generated candidate's Electron binary; wait
+  for the launcher and stop any watcher by its separately captured child PID.
 - Confirm a build with the feature disabled contains no injected emulator load
   and retains normal not-detected behavior.
+
+The runtime UAT must never use the user's ordinary `CODEX_HOME`. A prior
+isolation failure caused bundled marketplace reconciliation under
+`~/.codex`; without a pre-run snapshot, those writes cannot be safely separated
+from later normal application updates. Any follow-up examination of that state
+is read-only and must not delete, restore, or rewrite plugin data.
 
 No physical device is required for automated or manual acceptance of this
 feature.
