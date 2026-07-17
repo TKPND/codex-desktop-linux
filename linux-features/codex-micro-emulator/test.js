@@ -266,9 +266,10 @@ test("manifest exposes one patch and two declarative resources", () => {
   withFeatureConfig(["codex-micro-emulator"], () => {
     assert.deepEqual(enabledLinuxFeatureIds({ featuresRoot: FEATURES_ROOT }), ["codex-micro-emulator"]);
     const descriptors = loadLinuxFeaturePatchDescriptors({ featuresRoot: FEATURES_ROOT });
-    assert.deepEqual(descriptors.map(({ id }) => id), [
-      "feature:codex-micro-emulator:codex-micro-emulator-main",
-    ]);
+    assert.deepEqual(descriptors.map(({ id, phase }) => [id, phase]), [[
+      "feature:codex-micro-emulator:codex-micro-emulator-extracted-app",
+      "extracted-app:pre-webview",
+    ]]);
     const plan = enabledLinuxFeatureInstallPlan({ featuresRoot: FEATURES_ROOT });
     assert.deepEqual(
       plan.resources.map(({ target, mode }) => [target, mode]),

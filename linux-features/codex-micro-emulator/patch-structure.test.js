@@ -2,7 +2,14 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
+
+const {
+  applyCodexMicroEmulatorExtractedApp,
+} = require("./patch.js");
 
 const {
   BOOTSTRAP_MARKER,
@@ -54,6 +61,30 @@ function assertBoundedDrift(input, forbidden = "untouchedBefore") {
   assert.doesNotMatch(error.message, /[\r\n]/u);
   assert.equal(error.message.includes(forbidden), false);
   return error;
+}
+
+function writeExtractedFixture(root, overrides = {}) {
+  const buildDir = path.join(root, ".vite", "build");
+  fs.mkdirSync(buildDir, { recursive: true });
+  const mainPath = path.join(buildDir, overrides.mainName ?? "main-hw0RxS4P.js");
+  const servicePath = path.join(
+    buildDir,
+    overrides.serviceName ?? "codex-micro-service-C0OetNTY.js",
+  );
+  fs.writeFileSync(mainPath, overrides.mainSource ?? currentMainSource());
+  fs.writeFileSync(servicePath, overrides.serviceSource ?? currentServiceSource());
+  return { buildDir, mainPath, servicePath };
+}
+
+function withoutWarnings(callback) {
+  const warnings = [];
+  const previousWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    return { result: callback(), warnings };
+  } finally {
+    console.warn = previousWarn;
+  }
 }
 
 test("scanner decodes service requests across supported quote spellings", () => {
@@ -221,5 +252,167 @@ test("pure patch rejects partial markers", () => {
     const originals = { ...input };
     assert.match(assertBoundedDrift(input).message, /partial/u);
     assert.deepEqual(input, originals);
+  }
+});
+
+test("extracted-app patch writes both validated sources", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-patch-"));
+  try {
+    const paths = writeExtractedFixture(root);
+    const result = applyCodexMicroEmulatorExtractedApp(root);
+    assert.deepEqual(result, { matched: 2, changed: 2 });
+    assert.equal(fs.readFileSync(paths.mainPath, "utf8").includes(BOOTSTRAP_MARKER), true);
+    assert.match(
+      fs.readFileSync(paths.servicePath, "utf8"),
+      new RegExp(SERVICE_MARKER.replace(/[()]/gu, "\\$&")),
+    );
+    assert.deepEqual(applyCodexMicroEmulatorExtractedApp(root), { matched: 2, changed: 0 });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("extracted-app discovery fails closed for missing and duplicate candidates", () => {
+  const roots = [];
+  try {
+    const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-missing-"));
+    roots.push(missingRoot);
+    const missing = withoutWarnings(() => applyCodexMicroEmulatorExtractedApp(missingRoot));
+    assert.deepEqual(missing.result, {
+      matched: 0,
+      changed: 0,
+      reason: "Codex Micro build directory is missing",
+    });
+
+    const duplicateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-duplicate-"));
+    roots.push(duplicateRoot);
+    const paths = writeExtractedFixture(duplicateRoot);
+    fs.copyFileSync(paths.mainPath, path.join(paths.buildDir, "main-duplicate.js"));
+    const originals = [
+      fs.readFileSync(paths.mainPath, "utf8"),
+      fs.readFileSync(paths.servicePath, "utf8"),
+    ];
+    const duplicate = withoutWarnings(() => applyCodexMicroEmulatorExtractedApp(duplicateRoot));
+    assert.equal(duplicate.result.matched, 0);
+    assert.match(duplicate.result.reason, /main bundle candidates/u);
+    assert.deepEqual([
+      fs.readFileSync(paths.mainPath, "utf8"),
+      fs.readFileSync(paths.servicePath, "utf8"),
+    ], originals);
+  } finally {
+    for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("extracted-app discovery requires Work Louder package and public export", () => {
+  for (const serviceSource of [
+    currentServiceSource().replace("@worklouder/device-kit-oai", "other-device-kit"),
+    currentServiceSource().replace("exports.CodexMicroService=x;", "exports.Other=x;"),
+  ]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-service-candidate-"));
+    try {
+      const paths = writeExtractedFixture(root, { serviceSource });
+      const originals = [
+        fs.readFileSync(paths.mainPath, "utf8"),
+        fs.readFileSync(paths.servicePath, "utf8"),
+      ];
+      const { result } = withoutWarnings(() => applyCodexMicroEmulatorExtractedApp(root));
+      assert.equal(result.matched, 0);
+      assert.match(result.reason, /service bundle candidates/u);
+      assert.deepEqual([
+        fs.readFileSync(paths.mainPath, "utf8"),
+        fs.readFileSync(paths.servicePath, "utf8"),
+      ], originals);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("extracted-app transformation and syntax drift never write either bundle", () => {
+  const variants = [
+    { mainSource: `${currentMainSource()}${currentMainSource()}` },
+    { serviceSource: `${currentServiceSource()}\nexports.CodexMicroService=x;` },
+    { mainSource: `${currentMainSource()};const =` },
+    {
+      mainSource: `${currentMainSource()};console.error("${BOOTSTRAP_MARKER}")`,
+    },
+  ];
+  for (const [variantIndex, variant] of variants.entries()) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-drift-"));
+    try {
+      const paths = writeExtractedFixture(root, variant);
+      const originals = {
+        main: fs.readFileSync(paths.mainPath, "utf8"),
+        service: fs.readFileSync(paths.servicePath, "utf8"),
+      };
+      const { result, warnings } = withoutWarnings(() => applyCodexMicroEmulatorExtractedApp(root));
+      assert.equal(result.matched, 0, `variant ${variantIndex}: ${JSON.stringify(result)}`);
+      assert.equal(result.changed, 0);
+      assert.equal(warnings.length, 1);
+      assert.doesNotMatch(result.reason, /[\r\n]/u);
+      assert.equal(fs.readFileSync(paths.mainPath, "utf8"), originals.main);
+      assert.equal(fs.readFileSync(paths.servicePath, "utf8"), originals.service);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("second bundle write failure restores both originals", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-rollback-"));
+  try {
+    const paths = writeExtractedFixture(root);
+    const originals = {
+      main: fs.readFileSync(paths.mainPath, "utf8"),
+      service: fs.readFileSync(paths.servicePath, "utf8"),
+    };
+    let writes = 0;
+    const fsImpl = {
+      ...fs,
+      writeFileSync(filePath, contents) {
+        writes += 1;
+        if (writes === 2) throw new Error("simulated second write failure");
+        fs.writeFileSync(filePath, contents);
+      },
+    };
+    const { result } = withoutWarnings(() =>
+      applyCodexMicroEmulatorExtractedApp(root, { fsImpl })
+    );
+    assert.equal(result.matched, 0);
+    assert.equal(result.changed, 0);
+    assert.match(result.reason, /write failed/u);
+    assert.equal(fs.readFileSync(paths.mainPath, "utf8"), originals.main);
+    assert.equal(fs.readFileSync(paths.servicePath, "utf8"), originals.service);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rollback restoration failure is a bounded hard error", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-rollback-failure-"));
+  try {
+    writeExtractedFixture(root);
+    let writes = 0;
+    const fsImpl = {
+      ...fs,
+      writeFileSync(filePath, contents) {
+        writes += 1;
+        if (writes === 2) throw new Error("simulated forward failure");
+        if (writes === 3) throw new Error("simulated restore failure");
+        fs.writeFileSync(filePath, contents);
+      },
+    };
+    assert.throws(
+      () => withoutWarnings(() => applyCodexMicroEmulatorExtractedApp(root, { fsImpl })),
+      (error) => {
+        assert.match(error.message, /rollback failed/u);
+        assert.doesNotMatch(error.message, /untouchedBefore|RPCApiOAI/u);
+        assert.doesNotMatch(error.message, /[\r\n]/u);
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

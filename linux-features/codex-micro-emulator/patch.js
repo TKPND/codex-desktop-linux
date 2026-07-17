@@ -1,91 +1,161 @@
 "use strict";
 
-const BOOTSTRAP_MARKER = "function codexLinuxBootstrapCodexMicroEmulator(e)";
-const PATCH_MARKER = "function codexLinuxCodexMicroEmulatorOptions()";
-const SERVICE_IMPORT_PATTERN = /require\(`\.\/codex-micro-service-[^`]+\.js`\)/g;
-const SERVICE_MANAGER_CONSTRUCTOR =
-  "service=null;servicePromise=null;constructor(e){this.windowManager=e}";
-const CONSTRUCTOR_TAIL =
-  "onJoystickEvent:e=>{let t=this.windowManager.getPrimaryWindow();" +
-  "t!=null&&this.windowManager.sendMessageToWindow(t,{type:`codex-micro-joystick-event`,event:e})}})";
-const PATCH_SKIP_WARNING =
-  "WARN: current Codex Micro service and manager constructors were not found exactly once - skipping Codex Micro emulator patch";
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const {
+  CodexMicroPatchDriftError,
+  patchCodexMicroSources,
+  tokenizeJavaScript,
+} = require("./patch-structure.js");
 
-function countOccurrences(source, needle) {
+const PATCH_SKIP_WARNING =
+  "WARN: Codex Micro emulator patch drifted - leaving main and service bundles unchanged";
+const MAIN_NAME_PATTERN = /^main-[^/]+\.js$/u;
+const SERVICE_NAME_PATTERN = /^codex-micro-service-[^/]+\.js$/u;
+const SERVICE_REQUEST_PATTERN = /^\.\/codex-micro-service-[^/]+\.js$/u;
+
+function boundedReason(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const oneLine = message.replace(/[\r\n\t]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return oneLine.slice(0, 240) || "unknown Codex Micro patch failure";
+}
+
+function countPublicServiceExports(tokens) {
   let count = 0;
-  let index = 0;
-  while ((index = source.indexOf(needle, index)) !== -1) {
-    count += 1;
-    index += needle.length;
+  for (let index = 0; index <= tokens.length - 4; index += 1) {
+    if (
+      tokens[index].type === "identifier" &&
+      tokens[index].value === "exports" &&
+      tokens[index + 1].value === "." &&
+      tokens[index + 2].type === "identifier" &&
+      tokens[index + 2].value === "CodexMicroService" &&
+      tokens[index + 3].value === "="
+    ) {
+      count += 1;
+    }
   }
   return count;
 }
 
-function helperSource() {
-  return [
-    "function codexLinuxCodexMicroEmulatorOptions(){",
-    "let e=require(`node:path`),t=process.env.CODEX_LINUX_APP_DIR||e.dirname(process.resourcesPath);",
-    "return require(e.join(t,`.codex-linux`,`features`,`codex-micro-emulator`,`emulator.cjs`)).createOptions()",
-    "}",
-  ].join("");
+function isMainCandidate(source) {
+  const requests = tokenizeJavaScript(source).filter((token) =>
+    token.type === "string" &&
+    SERVICE_REQUEST_PATTERN.test(token.value) &&
+    !token.hasTemplateSubstitution
+  );
+  return requests.length === 1;
 }
 
-function bootstrapHelperSource() {
-  return [
-    "function codexLinuxBootstrapCodexMicroEmulator(e){",
-    "void e.getState().catch(e=>console.error(`[codex-micro-emulator] automatic bootstrap failed`,e))",
-    "}",
-  ].join("");
+function isServiceCandidate(source) {
+  const tokens = tokenizeJavaScript(source);
+  const packageRequests = tokens.filter((token) =>
+    token.type === "string" &&
+    token.value === "@worklouder/device-kit-oai" &&
+    !token.hasTemplateSubstitution
+  );
+  return packageRequests.length === 1 && countPublicServiceExports(tokens) === 1;
 }
 
-function appendHelper(source) {
-  const helper = `;${helperSource()};${bootstrapHelperSource()}`;
-  const sourceMapIndex = source.lastIndexOf("\n//# sourceMappingURL=");
-  if (sourceMapIndex === -1) return `${source}${helper}`;
-  return `${source.slice(0, sourceMapIndex)}${helper}${source.slice(sourceMapIndex)}`;
+function skip(reason) {
+  console.warn(`${PATCH_SKIP_WARNING}: ${reason}`);
+  return { matched: 0, changed: 0, reason };
 }
 
-function applyCodexMicroEmulatorPatch(source) {
-  const hasOptionsHelper = source.includes(PATCH_MARKER);
-  const hasBootstrapHelper = source.includes(BOOTSTRAP_MARKER);
-  if (hasOptionsHelper && hasBootstrapHelper) return source;
-  if (hasOptionsHelper || hasBootstrapHelper) {
-    console.warn(PATCH_SKIP_WARNING);
-    return source;
+function discoverCandidates(io, buildDir) {
+  if (!io.existsSync(buildDir)) {
+    throw new CodexMicroPatchDriftError("Codex Micro build directory is missing");
   }
-  const imports = source.match(SERVICE_IMPORT_PATTERN) ?? [];
-  const constructorCount = countOccurrences(source, CONSTRUCTOR_TAIL);
-  const managerCount = countOccurrences(source, SERVICE_MANAGER_CONSTRUCTOR);
-  if (imports.length !== 1 || constructorCount !== 1 || managerCount !== 1) {
-    console.warn(PATCH_SKIP_WARNING);
-    return source;
+  const names = io.readdirSync(buildDir);
+  const mainCandidates = [];
+  const serviceCandidates = [];
+  for (const name of names) {
+    if (!MAIN_NAME_PATTERN.test(name) && !SERVICE_NAME_PATTERN.test(name)) continue;
+    const filePath = path.join(buildDir, name);
+    const source = io.readFileSync(filePath, "utf8");
+    if (MAIN_NAME_PATTERN.test(name) && isMainCandidate(source)) {
+      mainCandidates.push({ path: filePath, source });
+    }
+    if (SERVICE_NAME_PATTERN.test(name) && isServiceCandidate(source)) {
+      serviceCandidates.push({ path: filePath, source });
+    }
   }
-
-  const serviceReplacement =
-    `${CONSTRUCTOR_TAIL.slice(0, -2)},...codexLinuxCodexMicroEmulatorOptions()})`;
-  const managerReplacement =
-    `${SERVICE_MANAGER_CONSTRUCTOR.slice(0, -1)};codexLinuxBootstrapCodexMicroEmulator(this)}`;
-  const patched = source
-    .replace(CONSTRUCTOR_TAIL, serviceReplacement)
-    .replace(SERVICE_MANAGER_CONSTRUCTOR, managerReplacement);
-  return appendHelper(patched);
+  if (mainCandidates.length !== 1) {
+    throw new CodexMicroPatchDriftError(
+      `expected one main bundle candidates match, found ${mainCandidates.length}`,
+    );
+  }
+  if (serviceCandidates.length !== 1) {
+    throw new CodexMicroPatchDriftError(
+      `expected one service bundle candidates match, found ${serviceCandidates.length}`,
+    );
+  }
+  return { main: mainCandidates[0], service: serviceCandidates[0] };
 }
 
-const descriptors = [
-  {
-    id: "codex-micro-emulator-main",
-    phase: "main-bundle",
-    order: 19_700,
-    apply: applyCodexMicroEmulatorPatch,
-  },
-];
+function restoreAttemptedWrites(io, attempted, originals) {
+  const failures = [];
+  for (const filePath of [...attempted].reverse()) {
+    try {
+      io.writeFileSync(filePath, originals.get(filePath));
+    } catch (error) {
+      failures.push(`${path.basename(filePath)}: ${boundedReason(error)}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`Codex Micro emulator rollback failed: ${failures.join("; ")}`);
+  }
+}
+
+function applyCodexMicroEmulatorExtractedApp(extractedDir, options = {}) {
+  const io = options.fsImpl ?? fs;
+  const buildDir = path.join(extractedDir, ".vite", "build");
+  let candidates;
+  let patched;
+  try {
+    candidates = discoverCandidates(io, buildDir);
+    patched = patchCodexMicroSources({
+      mainSource: candidates.main.source,
+      serviceSource: candidates.service.source,
+    });
+    new vm.Script(patched.serviceSource, {
+      filename: path.basename(candidates.service.path),
+    });
+    new vm.Script(patched.mainSource, {
+      filename: path.basename(candidates.main.path),
+    });
+  } catch (error) {
+    return skip(boundedReason(error));
+  }
+
+  if (!patched.changed) return { matched: 2, changed: 0 };
+
+  const originals = new Map([
+    [candidates.service.path, candidates.service.source],
+    [candidates.main.path, candidates.main.source],
+  ]);
+  const attempted = [];
+  try {
+    attempted.push(candidates.service.path);
+    io.writeFileSync(candidates.service.path, patched.serviceSource);
+    attempted.push(candidates.main.path);
+    io.writeFileSync(candidates.main.path, patched.mainSource);
+  } catch (error) {
+    restoreAttemptedWrites(io, attempted, originals);
+    return skip(`write failed: ${boundedReason(error)}`);
+  }
+  return { matched: 2, changed: 2 };
+}
+
+const descriptors = [{
+  id: "codex-micro-emulator-extracted-app",
+  phase: "extracted-app:pre-webview",
+  order: 19_700,
+  apply: applyCodexMicroEmulatorExtractedApp,
+}];
 
 module.exports = {
-  BOOTSTRAP_MARKER,
-  CONSTRUCTOR_TAIL,
-  PATCH_MARKER,
-  SERVICE_MANAGER_CONSTRUCTOR,
-  applyCodexMicroEmulatorPatch,
-  bootstrapHelperSource,
+  PATCH_SKIP_WARNING,
+  applyCodexMicroEmulatorExtractedApp,
   descriptors,
 };
