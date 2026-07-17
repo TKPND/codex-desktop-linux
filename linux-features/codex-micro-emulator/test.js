@@ -33,6 +33,7 @@ const {
   enabledLinuxFeatureIds,
   enabledLinuxFeatureInstallPlan,
   loadLinuxFeaturePatchDescriptors,
+  stageEnabledLinuxFeatureInstall,
 } = require("../../scripts/lib/linux-features.js");
 
 const FEATURE_DIR = __dirname;
@@ -270,6 +271,23 @@ test("manifest exposes one patch and two declarative resources", () => {
   });
 });
 
+test("declarative staging preserves module and CLI targets and modes", () => {
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-stage-"));
+  try {
+    withFeatureConfig(["codex-micro-emulator"], () => {
+      stageEnabledLinuxFeatureInstall(appDir, { featuresRoot: FEATURES_ROOT });
+    });
+    const modulePath = path.join(appDir, ".codex-linux", "features", "codex-micro-emulator", "emulator.cjs");
+    const cliPath = path.join(appDir, "resources", "native", "codex-micro-emulator");
+    assert.equal(fs.statSync(modulePath).mode & 0o777, 0o644);
+    assert.equal(fs.statSync(cliPath).mode & 0o777, 0o755);
+    assert.equal(fs.readFileSync(modulePath, "utf8"), fs.readFileSync(path.join(FEATURE_DIR, "emulator.cjs"), "utf8"));
+    assert.equal(fs.readFileSync(cliPath, "utf8"), fs.readFileSync(path.join(FEATURE_DIR, "bin", "codex-micro-emulator"), "utf8"));
+  } finally {
+    fs.rmSync(appDir, { recursive: true, force: true });
+  }
+});
+
 test("patch injects one staged module load and is byte-idempotent", () => {
   const { applyCodexMicroEmulatorPatch, PATCH_MARKER } = require("./patch.js");
   const source = currentMainBundleFixture();
@@ -491,6 +509,53 @@ test("fake discovery and communication implement upstream lifecycle and RPC", as
     await comm.disconnect();
     assert.equal(comm.isConnected(), false);
     assert.deepEqual(events, [0, 1]);
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rotated trace preserves full RPC and notification record order", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-order-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "codex-micro-emulator.sock"),
+    autoStart: false,
+  });
+  try {
+    await runtime.start();
+    runtime.trace.maxBytes = 700;
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    const [device] = options.discovery.findWLDevices(["project_2077"]);
+    await comm.connect(device);
+    comm.addNotifyHandler("v.oai.hid", () => {});
+    const raw = JSON.stringify({ method: "v.oai.rgbcfg", params: {}, id: 7 });
+    await comm.sendJsonRpcRequest(raw, "7");
+    assert.equal(runtime.dispatchNotification("v.oai.hid", { k: "AG00", act: 1 }), true);
+
+    const generations = [
+      `${runtime.logPath}.2`,
+      `${runtime.logPath}.1`,
+      runtime.logPath,
+    ];
+    assert.deepEqual(generations.map((logPath) => fs.existsSync(logPath)), [true, true, true]);
+    const records = generations
+      .filter((logPath) => fs.existsSync(logPath))
+      .flatMap((logPath) => fs.readFileSync(logPath, "utf8").trim().split("\n"))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter(({ session }) => session === runtime.session);
+    assert.deepEqual(records.map(({ type }) => type), [
+      "session",
+      "connection",
+      "connection",
+      "rpc.request",
+      "hid.frame",
+      "rpc.response",
+      "notify.rx",
+    ]);
+    assert.deepEqual(records.map(({ seq }) => seq), records.map((_, index) => index + 1));
   } finally {
     await runtime.close();
     fs.rmSync(root, { recursive: true, force: true });
