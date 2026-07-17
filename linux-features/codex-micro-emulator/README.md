@@ -121,6 +121,20 @@ An isolated runtime test must set a dedicated `CODEX_HOME` as well as every XDG 
 The background PID from `$!` belongs to the `start.sh` launcher, not Electron. In `--new-instance` mode the launcher publishes the Electron PID at `$XDG_STATE_HOME/codex-desktop/instances/port-*/app.pid` and waits for that Electron child.
 
 ```bash
+codex_micro_host_runtime="${XDG_RUNTIME_DIR:?host XDG_RUNTIME_DIR is required}"
+codex_micro_wayland_display="${WAYLAND_DISPLAY:?WAYLAND_DISPLAY is required for this Wayland UAT}"
+case "$codex_micro_wayland_display" in
+  ""|*/*)
+    echo "WAYLAND_DISPLAY must be a socket name below the host XDG_RUNTIME_DIR" >&2
+    false
+    ;;
+esac
+codex_micro_wayland_socket="$codex_micro_host_runtime/$codex_micro_wayland_display"
+if [ ! -S "$codex_micro_wayland_socket" ]; then
+  echo "host Wayland socket is unavailable: $codex_micro_wayland_socket" >&2
+  false
+fi
+
 mkdir -p \
   "$codex_micro_uat/codex-home" \
   "$codex_micro_uat/runtime" \
@@ -128,9 +142,12 @@ mkdir -p \
   "$codex_micro_uat/config" \
   "$codex_micro_uat/cache"
 chmod 700 "$codex_micro_uat/codex-home" "$codex_micro_uat/runtime"
+ln -s -- "$codex_micro_wayland_socket" \
+  "$codex_micro_uat/runtime/$codex_micro_wayland_display"
 
 CODEX_HOME="$codex_micro_uat/codex-home" \
 XDG_RUNTIME_DIR="$codex_micro_uat/runtime" \
+WAYLAND_DISPLAY="$codex_micro_wayland_display" \
 XDG_STATE_HOME="$codex_micro_uat/state" \
 XDG_CONFIG_HOME="$codex_micro_uat/config" \
 XDG_CACHE_HOME="$codex_micro_uat/cache" \
@@ -198,7 +215,7 @@ fi
 
 The bounded loop accepts exactly one `app.pid` below the isolated `port-*` instance directory and confirms that `/proc/$pid/exe` resolves to the candidate's Electron binary. If the launcher exits early or validation fails, it does not signal an unknown process; stop the UAT and inspect the isolated logs before proceeding.
 
-Use the same five environment variables for every emulator CLI command in that UAT. If `watch --raw` runs in the background, save its own `$!` as `codex_micro_watch_pid`. Clean up the watcher and application as separate, child-specific operations:
+Use the same isolated environment variables, including the explicit `WAYLAND_DISPLAY`, for every emulator CLI command in that UAT. If `watch --raw` runs in the background, save its own `$!` as `codex_micro_watch_pid`. Clean up the watcher and application as separate, child-specific operations:
 
 ```bash
 codex_micro_stop_watch() {

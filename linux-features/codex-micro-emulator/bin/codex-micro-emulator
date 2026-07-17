@@ -71,6 +71,8 @@ def send_request(request):
 
 
 def render_record(record):
+    if not isinstance(record, dict):
+        raise RuntimeError("emulator returned a malformed trace record")
     kind = record.get("type", "unknown")
     if kind == "rpc.request":
         return f"rpc.request id={record.get('id')} method={record.get('method')} raw={record.get('raw')}"

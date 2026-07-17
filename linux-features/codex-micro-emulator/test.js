@@ -3,7 +3,7 @@
 
 const assert = require("node:assert/strict");
 const { spawn, spawnSync } = require("node:child_process");
-const { once } = require("node:events");
+const { EventEmitter, once } = require("node:events");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
@@ -179,6 +179,32 @@ function socketLine(socketPath, line) {
     });
     socket.once("connect", () => socket.write(line));
   });
+}
+
+function fakeClientSocket({ writeResults = [] } = {}) {
+  const socket = new EventEmitter();
+  socket.destroyed = false;
+  socket.writableEnded = false;
+  socket.paused = false;
+  socket.writes = [];
+  socket.ends = [];
+  socket.write = (data) => {
+    socket.writes.push(data);
+    return writeResults.length === 0 ? true : writeResults.shift();
+  };
+  socket.end = (data) => {
+    socket.ends.push(data);
+    socket.writableEnded = true;
+  };
+  socket.destroy = () => {
+    if (socket.destroyed) return;
+    socket.destroyed = true;
+    socket.emit("close");
+  };
+  socket.pause = () => {
+    socket.paused = true;
+  };
+  return socket;
 }
 
 async function assertReplacementSocketSurvivesClose(closeMode) {
@@ -449,6 +475,52 @@ test("deterministic responses preserve valid JSON id types", () => {
   );
 });
 
+test("non-object JSON-RPC requests return and trace Invalid Request", async () => {
+  for (const raw of ["null", "[]"]) {
+    const parsed = buildDeterministicResponse(raw, "transport-id");
+    assert.deepEqual(parsed.body, {
+      id: null,
+      error: { code: -32600, message: "Invalid Request" },
+    });
+    assert.equal(parsed.method, null);
+    assert.equal(parsed.request, null);
+    assert.equal(parsed.unsupported, false);
+  }
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-invalid-rpc-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "codex-micro-emulator.sock"),
+    autoStart: false,
+  });
+  try {
+    runtime.initializeTrace();
+    runtime.desiredConnected = true;
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    assert.deepEqual(JSON.parse(await comm.sendJsonRpcRequest("null", "transport-id")), {
+      id: null,
+      error: { code: -32600, message: "Invalid Request" },
+    });
+    const records = fs.readFileSync(runtime.logPath, "utf8").trim().split("\n").map(JSON.parse);
+    assert.deepEqual(records.slice(-4).map(({ type, id, method, raw }) => ({ type, id, method, raw })), [
+      { type: "connection", id: undefined, method: undefined, raw: undefined },
+      { type: "rpc.request", id: null, method: null, raw: "null" },
+      { type: "hid.frame", id: undefined, method: undefined, raw: undefined },
+      {
+        type: "rpc.response",
+        id: null,
+        method: null,
+        raw: '{"id":null,"error":{"code":-32600,"message":"Invalid Request"}}',
+      },
+    ]);
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("trace sequence, modes, and rotation retain active plus two previous files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-trace-"));
   try {
@@ -680,6 +752,47 @@ test("typed key, encoder, and joystick commands reach only registered upstream m
   });
 });
 
+test("tap release never crosses a disconnect and reconnect boundary", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-tap-identity-"));
+  const timers = [];
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "codex-micro-emulator.sock"),
+    autoStart: false,
+    setTimer(callback) {
+      const timer = { callback };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer() {},
+  });
+  try {
+    runtime.initializeTrace();
+    runtime.desiredConnected = true;
+    const options = runtime.createOptions();
+    const first = options.createComm();
+    await first.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    const firstEvents = [];
+    first.addNotifyHandler("v.oai.hid", (params) => firstEvents.push(params));
+    assert.equal(runtime.sendKey("ENC_SW", "tap").ok, true);
+    assert.deepEqual(firstEvents, [{ k: "ENC_SW", act: 1 }]);
+    assert.equal(timers.length, 1);
+
+    await first.disconnect();
+    const second = options.createComm();
+    await second.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    const secondEvents = [];
+    second.addNotifyHandler("v.oai.hid", (params) => secondEvents.push(params));
+    timers[0].callback();
+
+    assert.deepEqual(firstEvents, [{ k: "ENC_SW", act: 1 }]);
+    assert.deepEqual(secondEvents, []);
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("invalid, oversized, and disconnected commands are rejected without dispatch", async () => {
   await withStartedRuntime(async (runtime) => {
     const invalid = await socketCommand(runtime.socketPath, { command: "key", key: "F13", action: "press" });
@@ -720,6 +833,32 @@ test("disconnect hides discovery and connect restores it for retry", async () =>
   });
 });
 
+test("connect is idempotent while upstream communication remains connected", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-connect-idempotent-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "codex-micro-emulator.sock"),
+    autoStart: false,
+  });
+  try {
+    runtime.initializeTrace();
+    runtime.desiredConnected = true;
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    const before = fs.readFileSync(runtime.logPath, "utf8");
+
+    assert.deepEqual(runtime.requestConnect(), { ok: true, result: runtime.status() });
+    assert.equal(runtime.state, "connected");
+    assert.equal(runtime.desiredConnected, true);
+    assert.equal(runtime.currentComm, comm);
+    assert.equal(fs.readFileSync(runtime.logPath, "utf8"), before);
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("watch acknowledges before streaming raw trace records", async () => {
   await withStartedRuntime(async (runtime) => {
     const records = await new Promise((resolve, reject) => {
@@ -746,6 +885,82 @@ test("watch acknowledges before streaming raw trace records", async () => {
     assert.equal(records[1].type, "connection");
     assert.equal(records[1].state, "watch-test");
   });
+});
+
+test("watch dedicates one control connection to exactly one trace subscription", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-watch-dedicated-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "emulator.sock"),
+    autoStart: false,
+  });
+  const socket = fakeClientSocket();
+  try {
+    runtime.initializeTrace();
+    runtime.acceptClient(socket);
+    socket.emit("data", Buffer.from('{"command":"watch"}\n{"command":"watch"}\n'));
+    await new Promise(setImmediate);
+
+    assert.equal(runtime.trace.listeners.size, 1);
+    assert.equal(socket.writes.length, 1);
+    assert.equal(socket.paused, true);
+  } finally {
+    socket.destroy();
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("watch unsubscribes and destroys its socket on the first write backpressure", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-watch-backpressure-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "emulator.sock"),
+    autoStart: false,
+  });
+  const socket = fakeClientSocket({ writeResults: [true, false] });
+  try {
+    runtime.initializeTrace();
+    runtime.beginWatch(socket);
+    assert.equal(runtime.trace.listeners.size, 1);
+
+    runtime.record("connection", { state: "slow-watch" });
+    assert.equal(socket.destroyed, true);
+    assert.equal(runtime.trace.listeners.size, 0);
+  } finally {
+    socket.destroy();
+    runtime.closeSync();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("control input bounds queued command count and bytes before dispatch", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-control-bounds-"));
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "emulator.sock"),
+    autoStart: false,
+  });
+  const countSocket = fakeClientSocket();
+  const bytesSocket = fakeClientSocket();
+  try {
+    runtime.initializeTrace();
+    runtime.acceptClient(countSocket);
+    countSocket.emit("data", Buffer.from('{"command":"status"}\n'.repeat(33)));
+    assert.equal(JSON.parse(countSocket.ends[0]).error.code, "input_overflow");
+
+    runtime.acceptClient(bytesSocket);
+    bytesSocket.emit("data", Buffer.from(`${" ".repeat(16_384)}\n`.repeat(9)));
+    assert.equal(JSON.parse(bytesSocket.ends[0]).error.code, "input_overflow");
+    await new Promise(setImmediate);
+    assert.deepEqual(countSocket.writes, []);
+    assert.deepEqual(bytesSocket.writes, []);
+  } finally {
+    countSocket.destroy();
+    bytesSocket.destroy();
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("CLI rejects invalid keys and encoder ranges before connecting", { skip: PYTHON == null }, () => {
@@ -823,6 +1038,16 @@ test("CLI rejects an incomplete successful status without printing None fields",
       env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir },
     });
     assertNormalizedCliFailure(result);
+  });
+});
+
+test("CLI human watch rejects a non-object trace record without a traceback", { skip: PYTHON == null }, async () => {
+  await withCliResponse('{"ok":true,"result":{"watching":true}}\nnull', async ({ runtimeDir }) => {
+    const result = await runCli(["watch"], {
+      env: { ...process.env, XDG_RUNTIME_DIR: runtimeDir },
+    });
+    assertNormalizedCliFailure(result);
+    assert.match(result.stderr, /malformed trace record/);
   });
 });
 
@@ -1040,6 +1265,41 @@ test("trace failure closes discovery and communication before later input dispat
     assert.ok(["trace_failed", "disconnected"].includes(later.error.code));
     assert.deepEqual(notifications, []);
   }, { fsImpl });
+});
+
+test("disconnect trace failure emits upstream ERROR instead of DISCONNECTED", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-disconnect-trace-failure-"));
+  let failAppend = false;
+  const fsImpl = Object.create(fs);
+  fsImpl.appendFileSync = (...args) => {
+    if (failAppend) throw new Error("simulated disconnect trace failure");
+    return fs.appendFileSync(...args);
+  };
+  const runtime = new CodexMicroEmulatorRuntime({
+    fsImpl,
+    stateDir: path.join(root, "state"),
+    socketPath: path.join(root, "runtime", "codex-desktop", "emulator.sock"),
+    autoStart: false,
+  });
+  try {
+    runtime.initializeTrace();
+    runtime.desiredConnected = true;
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    const events = [];
+    comm.onConnectionEvent((event) => events.push(event.type));
+    failAppend = true;
+
+    await assert.rejects(comm.disconnect(), /simulated disconnect trace failure/);
+    assert.deepEqual(events, [2]);
+    assert.equal(comm.isConnected(), false);
+    assert.equal(runtime.currentComm, null);
+    assert.equal(runtime.state, "error");
+  } finally {
+    await runtime.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("close releases its socket even when the disconnect trace append fails", async () => {

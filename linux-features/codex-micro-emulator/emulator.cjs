@@ -15,6 +15,8 @@ const RPC_CHANNEL = 0x02;
 const MAX_TRACE_BYTES = 5 * 1024 * 1024;
 const PREVIOUS_TRACE_FILES = 2;
 const MAX_SOCKET_LINE_BYTES = 16_384;
+const MAX_SOCKET_PENDING_COMMANDS = 32;
+const MAX_SOCKET_PENDING_BYTES = MAX_SOCKET_LINE_BYTES * 8;
 const TAP_DELAY_MS = 50;
 
 const ALLOWED_KEYS = new Set([
@@ -202,6 +204,10 @@ function buildDeterministicResponse(raw, transportId) {
     request = JSON.parse(raw);
   } catch {
     const body = { id: null, error: { code: -32700, message: "Parse error" } };
+    return { body, method: null, request: null, raw: JSON.stringify(body), unsupported: false };
+  }
+  if (request == null || typeof request !== "object" || Array.isArray(request)) {
+    const body = { id: null, error: { code: -32600, message: "Invalid Request" } };
     return { body, method: null, request: null, raw: JSON.stringify(body), unsupported: false };
   }
   const id = Object.hasOwn(request, "id") ? request.id : transportId ?? null;
@@ -418,13 +424,13 @@ class FakeWLDeviceComm {
 
   async disconnect() {
     if (!this.connected) return;
+    if (this.runtime.trace && !this.runtime.trace.failed && !this.runtime.trace.closed) {
+      this.runtime.record("connection", { state: "disconnected" });
+    }
     this.connected = false;
     this.notifyHandlers.clear();
     if (this.runtime.currentComm === this) this.runtime.currentComm = null;
     this.runtime.state = this.runtime.desiredConnected ? "discoverable" : "disconnected";
-    if (this.runtime.trace && !this.runtime.trace.failed && !this.runtime.trace.closed) {
-      this.runtime.record("connection", { state: "disconnected" });
-    }
     this.emitConnectionEvent(1);
   }
 
@@ -621,36 +627,97 @@ class CodexMicroEmulatorRuntime {
 
   acceptClient(socket) {
     this.clients.add(socket);
-    let buffer = Buffer.alloc(0);
-    let ended = false;
-    let processing = Promise.resolve();
-    const cleanup = () => this.clients.delete(socket);
+    const client = {
+      buffer: Buffer.alloc(0),
+      ended: false,
+      watching: false,
+      processing: false,
+      queue: [],
+      queuedBytes: 0,
+    };
+    const clearQueuedInput = () => {
+      client.buffer = Buffer.alloc(0);
+      client.queue.length = 0;
+      client.queuedBytes = 0;
+    };
+    const cleanup = () => {
+      client.ended = true;
+      clearQueuedInput();
+      this.clients.delete(socket);
+    };
+    const rejectInput = (code, message) => {
+      if (client.ended) return;
+      client.ended = true;
+      clearQueuedInput();
+      this.endClientWithError(socket, code, message);
+    };
+    const processQueue = async () => {
+      if (client.processing || client.ended || client.watching) return;
+      client.processing = true;
+      try {
+        while (!client.ended && !client.watching && client.queue.length > 0) {
+          const line = client.queue.shift();
+          client.queuedBytes -= line.length;
+          await this.processSocketLine(socket, line, client);
+        }
+        if (client.watching) {
+          clearQueuedInput();
+          socket.pause?.();
+        }
+      } finally {
+        client.processing = false;
+        if (!client.ended && !client.watching && client.queue.length > 0) {
+          void processQueue();
+        }
+      }
+    };
+    const enqueueLine = (line) => {
+      if (client.queue.length >= MAX_SOCKET_PENDING_COMMANDS ||
+          client.queuedBytes + line.length > MAX_SOCKET_PENDING_BYTES) {
+        rejectInput("input_overflow", "Socket input queue exceeds its bounded capacity");
+        return false;
+      }
+      const ownedLine = Buffer.from(line);
+      client.queue.push(ownedLine);
+      client.queuedBytes += ownedLine.length;
+      return true;
+    };
     socket.once("close", cleanup);
     socket.once("error", cleanup);
     socket.on("data", (chunk) => {
-      if (ended) return;
-      buffer = Buffer.concat([buffer, chunk]);
-      let newline;
-      while ((newline = buffer.indexOf(0x0a)) !== -1) {
-        const line = buffer.subarray(0, newline);
-        buffer = buffer.subarray(newline + 1);
-        if (line.length > MAX_SOCKET_LINE_BYTES) {
-          ended = true;
-          processing = processing.then(() => this.endClientWithError(socket, "line_too_large", "Socket line exceeds 16384 bytes"));
+      if (client.ended || client.watching) return;
+      let offset = 0;
+      while (offset < chunk.length && !client.ended) {
+        const newline = chunk.indexOf(0x0a, offset);
+        const segmentEnd = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset, segmentEnd);
+        const combinedLength = client.buffer.length + segment.length;
+        if (combinedLength > MAX_SOCKET_LINE_BYTES) {
+          rejectInput("line_too_large", "Socket line exceeds 16384 bytes");
           return;
         }
-        processing = processing.then(() => this.processSocketLine(socket, line));
+        if (newline === -1) {
+          if (segment.length > 0) {
+            client.buffer = client.buffer.length === 0
+              ? Buffer.from(segment)
+              : Buffer.concat([client.buffer, segment], combinedLength);
+          }
+          break;
+        }
+        const line = client.buffer.length === 0
+          ? segment
+          : Buffer.concat([client.buffer, segment], combinedLength);
+        client.buffer = Buffer.alloc(0);
+        if (!enqueueLine(line)) return;
+        offset = newline + 1;
       }
-      if (buffer.length > MAX_SOCKET_LINE_BYTES) {
-        ended = true;
-        processing = processing.then(() => this.endClientWithError(socket, "line_too_large", "Socket line exceeds 16384 bytes"));
-      }
+      void processQueue();
     });
   }
 
   writeSocketResponse(socket, response) {
-    if (socket.destroyed) return;
-    socket.write(`${JSON.stringify(response)}\n`);
+    if (socket.destroyed || socket.writableEnded) return false;
+    return socket.write(`${JSON.stringify(response)}\n`);
   }
 
   endClientWithError(socket, code, message) {
@@ -658,7 +725,7 @@ class CodexMicroEmulatorRuntime {
     socket.end(`${JSON.stringify(commandError(code, message))}\n`);
   }
 
-  async processSocketLine(socket, line) {
+  async processSocketLine(socket, line, client = null) {
     let parsed;
     try {
       parsed = JSON.parse(line.toString("utf8"));
@@ -672,8 +739,8 @@ class CodexMicroEmulatorRuntime {
       return;
     }
     try {
-      const response = await this.dispatchCommand(socket, validated.value);
-      if (response != null) this.writeSocketResponse(socket, response);
+      const response = await this.dispatchCommand(socket, validated.value, client);
+      if (response != null && !client?.ended) this.writeSocketResponse(socket, response);
     } catch (error) {
       const traceFailed = this.trace?.failed || this.state === "error" && /trace/i.test(this.error ?? "");
       this.writeSocketResponse(socket, commandError(
@@ -683,10 +750,10 @@ class CodexMicroEmulatorRuntime {
     }
   }
 
-  async dispatchCommand(socket, command) {
+  async dispatchCommand(socket, command, client = null) {
     switch (command.command) {
       case "status": return { ok: true, result: this.status() };
-      case "watch": return this.beginWatch(socket);
+      case "watch": return this.beginWatch(socket, client);
       case "connect": return this.requestConnect();
       case "disconnect": return this.requestDisconnect();
       case "key": return this.sendKey(command.key, command.action);
@@ -696,16 +763,20 @@ class CodexMicroEmulatorRuntime {
     }
   }
 
-  beginWatch(socket) {
+  beginWatch(socket, client = null) {
     if (!this.trace || this.trace.failed || this.trace.closed) {
       this.writeSocketResponse(socket, commandError("trace_failed", "Trace is unavailable"));
       return null;
     }
-    this.writeSocketResponse(socket, { ok: true, result: { watching: true, session: this.session } });
-    const unsubscribe = this.trace.subscribe((_record, line) => {
-      if (!socket.destroyed) socket.write(line);
-    });
+    if (client) {
+      client.watching = true;
+      client.buffer = Buffer.alloc(0);
+      client.queue.length = 0;
+      client.queuedBytes = 0;
+      socket.pause?.();
+    }
     let active = true;
+    let unsubscribe = () => {};
     const cleanup = () => {
       if (!active) return;
       active = false;
@@ -713,12 +784,32 @@ class CodexMicroEmulatorRuntime {
     };
     socket.once("close", cleanup);
     socket.once("error", cleanup);
+    if (!this.writeSocketResponse(socket, { ok: true, result: { watching: true, session: this.session } })) {
+      cleanup();
+      socket.destroy?.();
+      return null;
+    }
+    unsubscribe = this.trace.subscribe((_record, line) => {
+      if (socket.destroyed || socket.writableEnded) {
+        cleanup();
+        return;
+      }
+      if (!socket.write(line)) {
+        cleanup();
+        socket.destroy?.();
+      }
+    });
     return null;
   }
 
   requestConnect() {
     if (!this.isHealthy()) {
       return commandError(this.trace?.failed ? "trace_failed" : "disconnected", "Emulator is unavailable");
+    }
+    if (this.currentComm?.isConnected()) {
+      this.desiredConnected = true;
+      this.state = "connected";
+      return { ok: true, result: this.status() };
     }
     this.desiredConnected = true;
     this.state = "discoverable";
@@ -749,6 +840,7 @@ class CodexMicroEmulatorRuntime {
     if (!this.currentComm?.isConnected() || !this.currentComm.hasNotifyHandler("v.oai.hid")) {
       return this.inputUnavailable();
     }
+    const comm = this.currentComm;
     if (action !== "tap") {
       if (!this.dispatchNotification("v.oai.hid", { k: key, act: action === "press" ? 1 : 0 })) {
         return this.inputUnavailable();
@@ -758,7 +850,7 @@ class CodexMicroEmulatorRuntime {
     if (!this.dispatchNotification("v.oai.hid", { k: key, act: 1 })) return this.inputUnavailable();
     const timer = this.setTimer(() => {
       this.pendingTimers.delete(timer);
-      if (!this.currentComm?.isConnected()) return;
+      if (this.currentComm !== comm || !comm.isConnected()) return;
       try {
         this.dispatchNotification("v.oai.hid", { k: key, act: 0 });
       } catch (error) {
@@ -874,7 +966,6 @@ class CodexMicroEmulatorRuntime {
     this.desiredConnected = false;
     this.clearPendingTimers();
     const comm = this.currentComm;
-    this.currentComm = null;
     let firstError = null;
     try {
       await comm?.forceDisconnect();
