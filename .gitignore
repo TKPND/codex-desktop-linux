@@ -20,6 +20,7 @@ linux-features/local/
 .idea/
 .claude/
 .codex/
+.worktrees/
 
 # graphify
 graphify-out/
