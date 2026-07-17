@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+import sys
+
+print("codex-micro-emulator: no virtual device is discoverable", file=sys.stderr)
+raise SystemExit(1)

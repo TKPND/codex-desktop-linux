@@ -1,0 +1,21 @@
+{
+  "id": "codex-micro-emulator",
+  "title": "Codex Micro Emulator",
+  "description": "Emulates the Codex Micro transport in-process, traces upstream RPC and simulated HID frames, and accepts typed input over a private Unix socket.",
+  "defaultEnabled": false,
+  "entrypoints": {
+    "patchDescriptors": "./patch.js"
+  },
+  "resources": [
+    {
+      "source": "emulator.cjs",
+      "target": ".codex-linux/features/codex-micro-emulator/emulator.cjs",
+      "mode": "0644"
+    },
+    {
+      "source": "bin/codex-micro-emulator",
+      "target": "resources/native/codex-micro-emulator",
+      "mode": "0755"
+    }
+  ]
+}
