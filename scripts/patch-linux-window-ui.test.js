@@ -946,6 +946,7 @@ test("default core patch descriptors are grouped and unique", () => {
     "browser-use-node-repl-approval",
     "linux-bundled-plugin-reconcile-stale-snapshot",
     "linux-bundled-plugin-copy-permissions",
+    "linux-browser-use-socket-directory",
     "linux-browser-use-route-liveness",
     "linux-chrome-extension-status",
     "linux-notification-actions",
