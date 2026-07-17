@@ -524,13 +524,16 @@ test("rotated trace preserves full RPC and notification record order", async () 
   });
   try {
     await runtime.start();
-    runtime.trace.maxBytes = 700;
+    runtime.trace.maxBytes = 900;
     const options = runtime.createOptions();
     const comm = options.createComm();
     const [device] = options.discovery.findWLDevices(["project_2077"]);
     await comm.connect(device);
     comm.addNotifyHandler("v.oai.hid", () => {});
-    const raw = JSON.stringify({ method: "v.oai.rgbcfg", params: {}, id: 7 });
+    const raw = JSON.stringify({ method: "v.oai.rgbcfg", params: { payload: "x".repeat(40) }, id: 7 });
+    const rawBytes = Buffer.byteLength(raw);
+    assert.ok(rawBytes > 61);
+    assert.ok(rawBytes <= 122);
     await comm.sendJsonRpcRequest(raw, "7");
     assert.equal(runtime.dispatchNotification("v.oai.hid", { k: "AG00", act: 1 }), true);
 
@@ -546,11 +549,22 @@ test("rotated trace preserves full RPC and notification record order", async () 
       .filter(Boolean)
       .map((line) => JSON.parse(line))
       .filter(({ session }) => session === runtime.session);
-    assert.deepEqual(records.map(({ type }) => type), [
+    const types = records.map(({ type }) => type);
+    const frameRecords = records.filter(({ type }) => type === "hid.frame");
+    const requestIndex = types.indexOf("rpc.request");
+    const responseIndex = types.indexOf("rpc.response");
+    const frameIndexes = types.flatMap((type, index) => type === "hid.frame" ? [index] : []);
+    assert.ok(frameRecords.length > 1);
+    assert.deepEqual(frameRecords.map(({ packet }) => packet), [1, 2]);
+    assert.deepEqual(frameRecords.map(({ packetCount }) => packetCount), [2, 2]);
+    assert.deepEqual(frameIndexes, [requestIndex + 1, requestIndex + 2]);
+    assert.equal(responseIndex, frameIndexes.at(-1) + 1);
+    assert.deepEqual(types, [
       "session",
       "connection",
       "connection",
       "rpc.request",
+      "hid.frame",
       "hid.frame",
       "rpc.response",
       "notify.rx",

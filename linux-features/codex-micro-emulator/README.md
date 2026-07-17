@@ -86,8 +86,10 @@ Use an isolated feature config and candidate directory when checking staging wit
 
 ```bash
 codex_micro_uat=$(mktemp -d)
+mkdir -p "$codex_micro_uat/codex-home"
 node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({enabled:["codex-micro-emulator"]}, null, 2)+"\n")' \
   "$codex_micro_uat/enabled-features.json"
+CODEX_HOME="$codex_micro_uat/codex-home" \
 CODEX_LINUX_FEATURES_CONFIG="$codex_micro_uat/enabled-features.json" \
 CODEX_NEXT_APP_DIR="$codex_micro_uat/codex-app-enabled" \
 REBUILD_REPORT_DIR="$codex_micro_uat/enabled-report" \
@@ -107,6 +109,37 @@ stat -c '%a %n' \
 ```
 
 The expected modes are `644` for `emulator.cjs` and `755` for the CLI.
+
+### Isolate generated-app runtime UAT
+
+An isolated runtime test must set a dedicated `CODEX_HOME` as well as every XDG root. XDG roots alone do not isolate bundled plugin marketplace and plugin cache writes, which otherwise use the normal `~/.codex` tree.
+
+```bash
+mkdir -p \
+  "$codex_micro_uat/codex-home" \
+  "$codex_micro_uat/runtime" \
+  "$codex_micro_uat/state" \
+  "$codex_micro_uat/config" \
+  "$codex_micro_uat/cache"
+chmod 700 "$codex_micro_uat/codex-home" "$codex_micro_uat/runtime"
+
+CODEX_HOME="$codex_micro_uat/codex-home" \
+XDG_RUNTIME_DIR="$codex_micro_uat/runtime" \
+XDG_STATE_HOME="$codex_micro_uat/state" \
+XDG_CONFIG_HOME="$codex_micro_uat/config" \
+XDG_CACHE_HOME="$codex_micro_uat/cache" \
+  "$codex_micro_uat/codex-app-enabled/start.sh" --new-instance \
+  >"$codex_micro_uat/enabled-app.log" 2>&1 &
+codex_micro_app_pid=$!
+```
+
+Use the same five environment variables for every emulator CLI command in that UAT. Stop and wait for only `$codex_micro_app_pid` when the test finishes.
+
+### Troubleshoot a missing socket
+
+Emulator service startup is lazy. The staged module is not loaded until the upstream renderer mounts `CodexMicroBridge` and requests Codex Micro state. If the socket never appears, upstream Codex Micro availability or gating may be preventing that bridge from mounting; socket absence alone does not prove that any particular gate returned `false`.
+
+First confirm that the generated candidate contains the exact applied feature patch and staged files shown above. Then inspect the current upstream bridge mount path and account availability. Do not force or invent a local gate override as part of emulator troubleshooting.
 
 ## Future Air60 V2 integration
 
