@@ -506,6 +506,7 @@ class CodexMicroEmulatorRuntime {
     this.logPath = path.join(this.stateDir, "events.jsonl");
     this.socketPath = socketPath ?? runtimePaths.socketPath;
     this.socketParent = path.dirname(this.socketPath);
+    this.socketBindPath = path.join(this.socketParent, ".codex-micro-bind.sock");
     this.autoStart = autoStart;
     this.session = crypto.randomUUID();
     this.state = "idle";
@@ -571,6 +572,7 @@ class CodexMicroEmulatorRuntime {
       this.fs.mkdirSync(this.socketParent, { recursive: true, mode: 0o700 });
       this.fs.chmodSync(this.socketParent, 0o700);
       await recoverStaleSocket({ socketPath: this.socketPath, fsImpl: this.fs, netImpl: this.net });
+      await recoverStaleSocket({ socketPath: this.socketBindPath, fsImpl: this.fs, netImpl: this.net });
 
       const server = this.net.createServer((socket) => this.acceptClient(socket));
       this.server = server;
@@ -589,11 +591,14 @@ class CodexMicroEmulatorRuntime {
         };
         server.once("error", onError);
         server.once("listening", onListening);
-        server.listen(this.socketPath);
+        server.listen(this.socketBindPath);
       });
       starting = false;
-      this.fs.chmodSync(this.socketPath, 0o600);
-      const socketStat = this.fs.lstatSync(this.socketPath);
+      this.fs.chmodSync(this.socketBindPath, 0o600);
+      const socketStat = this.fs.lstatSync(this.socketBindPath);
+      // Node unlinks its listen pathname during close. Keep that private alias
+      // owned while exposing the same inode at the guarded public path.
+      this.fs.linkSync(this.socketBindPath, this.socketPath);
       this.socketIdentity = { dev: socketStat.dev, ino: socketStat.ino };
       this.state = "discoverable";
       this.desiredConnected = true;

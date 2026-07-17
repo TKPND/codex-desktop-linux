@@ -100,6 +100,57 @@ function socketLine(socketPath, line) {
   });
 }
 
+async function assertReplacementSocketSurvivesClose(closeMode) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-replacement-"));
+  const socketPath = path.join(root, "runtime", "codex-desktop", "emulator.sock");
+  const runtime = new CodexMicroEmulatorRuntime({
+    stateDir: path.join(root, "state"),
+    socketPath,
+    autoStart: false,
+  });
+  const replacement = net.createServer((socket) => socket.end("replacement"));
+  try {
+    await runtime.start();
+    fs.unlinkSync(socketPath);
+    replacement.listen(socketPath);
+    await once(replacement, "listening");
+    const replacementIdentity = fs.lstatSync(socketPath);
+
+    if (closeMode === "sync") {
+      const closed = once(runtime.server, "close");
+      runtime.closeSync();
+      await closed;
+    } else {
+      await runtime.close();
+    }
+
+    assert.equal(fs.existsSync(socketPath), true);
+    const currentIdentity = fs.lstatSync(socketPath);
+    assert.deepEqual(
+      { dev: currentIdentity.dev, ino: currentIdentity.ino },
+      { dev: replacementIdentity.dev, ino: replacementIdentity.ino },
+    );
+    const reply = await new Promise((resolve, reject) => {
+      const client = net.createConnection(socketPath);
+      let response = "";
+      client.once("error", reject);
+      client.on("data", (chunk) => {
+        response += chunk.toString("utf8");
+      });
+      client.once("end", () => resolve(response));
+    });
+    assert.equal(reply, "replacement");
+  } finally {
+    if (!runtime.closed) await runtime.close();
+    if (replacement.listening) {
+      const closed = once(replacement, "close");
+      replacement.close();
+      await closed;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function currentMainBundleFixture() {
   return [
     "const codexMicroUntouchedBefore=42;",
@@ -539,6 +590,14 @@ test("closeSync preserves a replacement whose socket identity changed", async ()
     await runtime.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("replacement socket survives asynchronous runtime close", async () => {
+  await assertReplacementSocketSurvivesClose("async");
+});
+
+test("replacement socket survives synchronous runtime close", async () => {
+  await assertReplacementSocketSurvivesClose("sync");
 });
 
 test("trace failure closes discovery and communication before later input dispatch", async () => {
