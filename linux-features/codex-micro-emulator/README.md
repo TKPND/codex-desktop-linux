@@ -51,6 +51,8 @@ The seven command groups are `status`, `watch`, `connect`, `disconnect`, `key`, 
 
 Enabling the feature automatically bootstraps the existing upstream service-manager `getState()` path once at application launch. Renderer gate `3207467860` and Codex Micro UI visibility are unchanged, so the emulator may run without visible Codex Micro UI.
 
+The enabled feature patches two extracted upstream bundles as one transaction. It wraps the public `exports.CodexMicroService` class with an emulator-aware subclass, preserving the original service/API/RPC implementation, and inserts one `getState()` bootstrap into the structurally identified service-manager constructor. Quote style, chunk hashes, minified local names, whitespace, and callback ordering are not anchors.
+
 - `key <name> <action>` allows `AG00` through `AG05`, `ACT06` through `ACT12`, and `ENC_SW`, with `press`, `release`, or `tap`.
 - `encoder <direction> [--steps N]` allows `cw` or `ccw`; `N` defaults to 1 and must be from 1 through 100.
 - `joystick <direction>` allows `up`, `right`, `down`, `left`, or `center`.
@@ -80,7 +82,7 @@ Simulated HID framing uses report ID `0x06`, channel `0x02`, up to 61 payload by
 
 Raw Codex Micro RPC payloads are private debug data. Observed traffic currently concerns device lighting and status rather than prompts, but traces can still reveal app behavior and must be reviewed before sharing.
 
-Trace durability is fail-closed: if the trace or control socket fails, the virtual device disconnects and stops accepting typed input. If the enabled patch no longer matches the current upstream bundle, feature drift rejects the rebuild candidate instead of promoting an app without the requested emulator.
+Trace durability is fail-closed: if the trace or control socket fails, the virtual device disconnects and stops accepting typed input. If either public export or manager lifecycle is missing, duplicated, ambiguous, partially marked, or syntactically invalid, neither upstream bundle is changed. Because this is an enabled optional feature, that drift rejects candidate promotion instead of installing an app without the requested emulator.
 
 If automatic bootstrap rejects, the app logs `[codex-micro-emulator] automatic bootstrap failed`, keeps running, and leaves the emulator unavailable.
 
@@ -103,7 +105,7 @@ REBUILD_REPORT_DIR="$codex_micro_uat/enabled-report" \
 Verify the exact patch entry and staged permissions:
 
 ```bash
-node -e 'const r=require(process.argv[1]); const p=r.patches.find((p)=>p.name==="feature:codex-micro-emulator:codex-micro-emulator-main"); if (!p || p.status!=="applied") { console.error(p||"missing feature patch"); process.exit(1); }' \
+node -e 'const r=require(process.argv[1]); const p=r.patches.find((p)=>p.name==="feature:codex-micro-emulator:codex-micro-emulator-extracted-app"); if (!p || p.status!=="applied") { console.error(p||"missing feature patch"); process.exit(1); }' \
   "$codex_micro_uat/enabled-report/patch-report.json"
 test -r "$codex_micro_uat/codex-app-enabled/.codex-linux/features/codex-micro-emulator/emulator.cjs"
 test -x "$codex_micro_uat/codex-app-enabled/resources/native/codex-micro-emulator"
