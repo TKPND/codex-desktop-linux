@@ -2,6 +2,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawn, spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -36,6 +37,8 @@ const {
 
 const FEATURE_DIR = __dirname;
 const FEATURES_ROOT = path.resolve(FEATURE_DIR, "..");
+const CLI = path.join(FEATURE_DIR, "bin", "codex-micro-emulator");
+const PYTHON = spawnSync("python3", ["--version"], { encoding: "utf8" }).status === 0 ? "python3" : null;
 const PATCH_SKIP_WARNING =
   "WARN: current Codex Micro service constructor was not found exactly once - skipping Codex Micro emulator patch";
 
@@ -78,6 +81,51 @@ async function withStartedRuntime(callback, options = {}) {
     await runtime.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function cliEnv(runtime) {
+  return {
+    ...process.env,
+    XDG_RUNTIME_DIR: path.dirname(path.dirname(runtime.socketPath)),
+  };
+}
+
+function runCli(args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(PYTHON, [CLI, ...args], {
+      ...options,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.once("error", reject);
+    child.once("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
+  });
+}
+
+function waitFor(predicate, message, timeoutMs = 2_000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      try {
+        if (predicate()) {
+          resolve();
+          return;
+        }
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(message));
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
 }
 
 function socketCommand(socketPath, request) {
@@ -534,6 +582,126 @@ test("watch acknowledges before streaming raw trace records", async () => {
     assert.deepEqual(records[0], { ok: true, result: { watching: true, session: runtime.session } });
     assert.equal(records[1].type, "connection");
     assert.equal(records[1].state, "watch-test");
+  });
+});
+
+test("CLI rejects invalid keys and encoder ranges before connecting", { skip: PYTHON == null }, () => {
+  const badKey = spawnSync(PYTHON, [CLI, "key", "F13", "press"], { encoding: "utf8" });
+  assert.equal(badKey.status, 2);
+  assert.match(badKey.stderr, /invalid choice/);
+  const badSteps = spawnSync(PYTHON, [CLI, "encoder", "cw", "--steps", "101"], { encoding: "utf8" });
+  assert.equal(badSteps.status, 2);
+  assert.match(badSteps.stderr, /between 1 and 100/);
+});
+
+test("CLI status and typed input use the runtime socket", { skip: PYTHON == null }, async () => {
+  await withStartedRuntime(async (runtime) => {
+    const options = runtime.createOptions();
+    const comm = options.createComm();
+    await comm.connect(options.discovery.findWLDevices(["project_2077"])[0]);
+    const received = [];
+    comm.addNotifyHandler("v.oai.hid", (params) => received.push(params));
+    const status = await runCli(["status"], { env: cliEnv(runtime) });
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(
+      status.stdout,
+      `state=connected connected=true discoverable=true log=${runtime.logPath} socket=${runtime.socketPath}\n`,
+    );
+    const key = await runCli(["key", "ACT06", "press"], { env: cliEnv(runtime) });
+    assert.equal(key.status, 0, key.stderr);
+    assert.deepEqual(received, [{ k: "ACT06", act: 1 }]);
+  });
+});
+
+test("CLI raw watch streams byte-preserved trace records and exits with its child", { skip: PYTHON == null }, async () => {
+  await withStartedRuntime(async (runtime) => {
+    const child = spawn(PYTHON, [CLI, "watch", "--raw"], {
+      env: cliEnv(runtime),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let closedResult;
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (status, signal) => {
+        closedResult = { status, signal };
+        resolve(closedResult);
+      });
+    });
+    let killed = false;
+    try {
+      await waitFor(
+        () => runtime.trace.listeners.size === 1 || child.exitCode != null,
+        "CLI watch did not subscribe to the trace",
+      );
+      assert.equal(runtime.trace.listeners.size, 1, stderr);
+      const record = runtime.record("connection", { state: "cli-watch" });
+      const expectedLine = `${JSON.stringify(record)}\n`;
+      await waitFor(() => stdout.includes('"state":"cli-watch"'), "CLI watch did not stream the trace record");
+      assert.equal(stdout.slice(stdout.indexOf(expectedLine)), expectedLine);
+    } finally {
+      if (child.exitCode == null && child.signalCode == null) killed = child.kill("SIGTERM");
+      await closed;
+      if (killed) assert.equal(closedResult.signal, "SIGTERM", stderr);
+    }
+  });
+});
+
+test("CLI human watch renders high-signal trace fields", { skip: PYTHON == null }, async () => {
+  await withStartedRuntime(async (runtime) => {
+    const child = spawn(PYTHON, [CLI, "watch"], {
+      env: cliEnv(runtime),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let closedResult;
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (status, signal) => {
+        closedResult = { status, signal };
+        resolve(closedResult);
+      });
+    });
+    let killed = false;
+    try {
+      await waitFor(
+        () => runtime.trace.listeners.size === 1 || child.exitCode != null,
+        "CLI human watch did not subscribe to the trace",
+      );
+      assert.equal(runtime.trace.listeners.size, 1, stderr);
+      runtime.record("rpc.request", { id: 7, method: "device.status", raw: '{"method":"device.status","id":7}' });
+      runtime.record("hid.frame", {
+        rpcId: 7,
+        packet: 1,
+        packetCount: 2,
+        payloadLength: 61,
+        reportHex: "0602",
+      });
+      runtime.record("rpc.response", { id: 7, method: "device.status", raw: '{"id":7,"result":{}}' });
+      runtime.record("notify.rx", { method: "v.oai.hid", params: { k: "AG00", act: 1 } });
+      const expected = [
+        'rpc.request id=7 method=device.status raw={"method":"device.status","id":7}',
+        "hid.frame rpc=7 packet=1/2 bytes=61 0602",
+        'rpc.response id=7 method=device.status raw={"id":7,"result":{}}',
+        'notify.rx method=v.oai.hid params={"k":"AG00","act":1}',
+        "",
+      ].join("\n");
+      await waitFor(
+        () => stdout === expected || child.exitCode != null,
+        "CLI human watch did not render the trace records",
+      );
+      assert.equal(stdout, expected, stderr);
+    } finally {
+      if (child.exitCode == null && child.signalCode == null) killed = child.kill("SIGTERM");
+      await closed;
+      if (killed) assert.equal(closedResult.signal, "SIGTERM", stderr);
+    }
   });
 });
 

@@ -1,5 +1,162 @@
 #!/usr/bin/env python3
+import argparse
+import json
+import os
+import socket
 import sys
 
-print("codex-micro-emulator: no virtual device is discoverable", file=sys.stderr)
-raise SystemExit(1)
+ALLOWED_KEYS = [
+    "AG00", "AG01", "AG02", "AG03", "AG04", "AG05",
+    "ACT06", "ACT07", "ACT08", "ACT09", "ACT10", "ACT11", "ACT12",
+    "ENC_SW",
+]
+
+
+def bounded_steps(value):
+    steps = int(value)
+    if not 1 <= steps <= 100:
+        raise argparse.ArgumentTypeError("steps must be between 1 and 100")
+    return steps
+
+
+def socket_path():
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        raise RuntimeError("XDG_RUNTIME_DIR is required")
+    return os.path.join(runtime_dir, "codex-desktop", "codex-micro-emulator.sock")
+
+
+def connect_socket():
+    path = socket_path()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(path)
+    except OSError:
+        client.close()
+        raise
+    return client
+
+
+def parse_response(line):
+    if not line:
+        raise RuntimeError("emulator closed the socket without a response")
+    response = json.loads(line)
+    if not response.get("ok"):
+        error = response.get("error") or {}
+        raise RuntimeError(error.get("message") or error.get("code") or "emulator command failed")
+    return response.get("result") or {}
+
+
+def send_request(request):
+    with connect_socket() as client:
+        client.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8"))
+        with client.makefile("r", encoding="utf-8", newline="\n") as response_file:
+            line = response_file.readline()
+    return parse_response(line)
+
+
+def render_record(record):
+    kind = record.get("type", "unknown")
+    if kind == "rpc.request":
+        return f"rpc.request id={record.get('id')} method={record.get('method')} raw={record.get('raw')}"
+    if kind == "hid.frame":
+        return (
+            f"hid.frame rpc={record.get('rpcId')} "
+            f"packet={record.get('packet')}/{record.get('packetCount')} "
+            f"bytes={record.get('payloadLength')} {record.get('reportHex')}"
+        )
+    if kind == "rpc.response":
+        return f"rpc.response id={record.get('id')} method={record.get('method')} raw={record.get('raw')}"
+    if kind == "notify.rx":
+        return f"notify.rx method={record.get('method')} params={json.dumps(record.get('params'), separators=(',', ':'))}"
+    return f"{kind} {json.dumps(record, separators=(',', ':'))}"
+
+
+def boolean_text(value):
+    return "true" if value else "false"
+
+
+def render_status(result):
+    discoverable = bool(result.get("desiredConnected")) and result.get("state") != "error"
+    return (
+        f"state={result.get('state')} "
+        f"connected={boolean_text(result.get('connected'))} "
+        f"discoverable={boolean_text(discoverable)} "
+        f"log={result.get('logPath')} "
+        f"socket={result.get('socketPath')}"
+    )
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="codex-micro-emulator")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status")
+    watch = commands.add_parser("watch")
+    watch.add_argument("--raw", action="store_true")
+    commands.add_parser("connect")
+    commands.add_parser("disconnect")
+    key = commands.add_parser("key")
+    key.add_argument("key", choices=ALLOWED_KEYS)
+    key.add_argument("action", choices=["press", "release", "tap"])
+    encoder = commands.add_parser("encoder")
+    encoder.add_argument("direction", choices=["cw", "ccw"])
+    encoder.add_argument("--steps", type=bounded_steps, default=1)
+    joystick = commands.add_parser("joystick")
+    joystick.add_argument("direction", choices=["up", "right", "down", "left", "center"])
+    return parser
+
+
+def request_for(args):
+    if args.command in ["status", "connect", "disconnect"]:
+        return {"command": args.command}
+    if args.command == "key":
+        return {"command": "key", "key": args.key, "action": args.action}
+    if args.command == "encoder":
+        return {"command": "encoder", "direction": args.direction, "steps": args.steps}
+    if args.command == "joystick":
+        return {"command": "joystick", "direction": args.direction}
+    raise RuntimeError(f"unsupported command: {args.command}")
+
+
+def watch_records(raw):
+    with connect_socket() as client:
+        client.sendall(b'{"command":"watch"}\n')
+        with client.makefile("r", encoding="utf-8", newline="\n") as trace_file:
+            parse_response(trace_file.readline())
+            for line in trace_file:
+                text = line[:-1] if line.endswith("\n") else line
+                if raw:
+                    print(text, flush=True)
+                else:
+                    print(render_record(json.loads(text)), flush=True)
+
+
+def run(args):
+    if args.command == "watch":
+        watch_records(args.raw)
+        return
+    result = send_request(request_for(args))
+    if args.command in ["status", "connect", "disconnect"]:
+        print(render_status(result))
+    else:
+        print(f"{args.command}=ok")
+
+
+def main():
+    args = build_parser().parse_args()
+    try:
+        run(args)
+    except BrokenPipeError:
+        try:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        except OSError:
+            pass
+        return 0
+    except (FileNotFoundError, ConnectionRefusedError, json.JSONDecodeError, RuntimeError) as error:
+        message = str(error).replace("\r", " ").replace("\n", " ")
+        print(f"codex-micro-emulator: {message}", file=sys.stderr)
+        return 1
+    return 0
+
+
+raise SystemExit(main())
