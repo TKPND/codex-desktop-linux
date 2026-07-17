@@ -114,6 +114,8 @@ The expected modes are `644` for `emulator.cjs` and `755` for the CLI.
 
 An isolated runtime test must set a dedicated `CODEX_HOME` as well as every XDG root. XDG roots alone do not isolate bundled plugin marketplace and plugin cache writes, which otherwise use the normal `~/.codex` tree.
 
+The background PID from `$!` belongs to the `start.sh` launcher, not Electron. In `--new-instance` mode the launcher publishes the Electron PID at `$XDG_STATE_HOME/codex-desktop/instances/port-*/app.pid` and waits for that Electron child.
+
 ```bash
 mkdir -p \
   "$codex_micro_uat/codex-home" \
@@ -130,10 +132,105 @@ XDG_CONFIG_HOME="$codex_micro_uat/config" \
 XDG_CACHE_HOME="$codex_micro_uat/cache" \
   "$codex_micro_uat/codex-app-enabled/start.sh" --new-instance \
   >"$codex_micro_uat/enabled-app.log" 2>&1 &
-codex_micro_app_pid=$!
+codex_micro_launcher_pid=$!
+codex_micro_electron_pid=""
+codex_micro_expected_electron="$codex_micro_uat/codex-app-enabled/electron"
+codex_micro_instances="$codex_micro_uat/state/codex-desktop/instances"
+
+for attempt in $(seq 1 120); do
+  if ! kill -0 "$codex_micro_launcher_pid" 2>/dev/null; then
+    if wait "$codex_micro_launcher_pid"; then
+      codex_micro_launcher_status=0
+    else
+      codex_micro_launcher_status=$?
+    fi
+    codex_micro_launcher_pid=""
+    echo "launcher exited before a validated app.pid (status=$codex_micro_launcher_status)" >&2
+    break
+  fi
+
+  mapfile -d '' -t codex_micro_pid_files < <(
+    find "$codex_micro_instances" -mindepth 2 -maxdepth 2 -type f \
+      -path "$codex_micro_instances/port-*/app.pid" -print0 2>/dev/null
+  )
+  if [ "${#codex_micro_pid_files[@]}" -eq 0 ]; then
+    sleep 1
+    continue
+  fi
+  if [ "${#codex_micro_pid_files[@]}" -ne 1 ]; then
+    echo "refusing cleanup: expected exactly one isolated app.pid" >&2
+    break
+  fi
+
+  if ! IFS= read -r codex_micro_candidate_pid < "${codex_micro_pid_files[0]}"; then
+    echo "refusing cleanup: unreadable isolated app.pid" >&2
+    break
+  fi
+  case "$codex_micro_candidate_pid" in
+    ""|*[!0-9]*)
+      echo "refusing cleanup: invalid Electron PID" >&2
+      break
+      ;;
+  esac
+  if [ "$codex_micro_candidate_pid" -le 1 ]; then
+    echo "refusing cleanup: invalid Electron PID" >&2
+    break
+  fi
+
+  codex_micro_candidate_exe="$(readlink -f "/proc/$codex_micro_candidate_pid/exe" 2>/dev/null || true)"
+  if [ "$codex_micro_candidate_exe" != "$codex_micro_expected_electron" ]; then
+    echo "refusing cleanup: app.pid does not name the isolated Electron" >&2
+    break
+  fi
+  codex_micro_electron_pid="$codex_micro_candidate_pid"
+  break
+done
+
+if [ -z "$codex_micro_electron_pid" ]; then
+  echo "no Electron PID was validated; no process was signalled" >&2
+  false
+fi
 ```
 
-Use the same five environment variables for every emulator CLI command in that UAT. Stop and wait for only `$codex_micro_app_pid` when the test finishes.
+The bounded loop accepts exactly one `app.pid` below the isolated `port-*` instance directory and confirms that `/proc/$pid/exe` resolves to the candidate's Electron binary. If the launcher exits early or validation fails, it does not signal an unknown process; stop the UAT and inspect the isolated logs before proceeding.
+
+Use the same five environment variables for every emulator CLI command in that UAT. If `watch --raw` runs in the background, save its own `$!` as `codex_micro_watch_pid`. Clean up the watcher and application as separate, child-specific operations:
+
+```bash
+codex_micro_stop_watch() {
+  if [ -n "${codex_micro_watch_pid:-}" ]; then
+    kill -TERM -- "$codex_micro_watch_pid" 2>/dev/null || true
+    wait "$codex_micro_watch_pid" 2>/dev/null || true
+    codex_micro_watch_pid=""
+  fi
+}
+
+codex_micro_stop_app() {
+  local current_exe=""
+  if [ -z "${codex_micro_electron_pid:-}" ]; then
+    return 0
+  fi
+
+  current_exe="$(readlink -f "/proc/$codex_micro_electron_pid/exe" 2>/dev/null || true)"
+  if [ "$current_exe" = "$codex_micro_expected_electron" ]; then
+    kill -TERM -- "$codex_micro_electron_pid" 2>/dev/null || true
+  elif kill -0 "$codex_micro_electron_pid" 2>/dev/null; then
+    echo "refusing cleanup: validated Electron PID now names another executable" >&2
+    return 1
+  fi
+
+  if [ -n "${codex_micro_launcher_pid:-}" ]; then
+    wait "$codex_micro_launcher_pid" 2>/dev/null || true
+  fi
+  codex_micro_electron_pid=""
+  codex_micro_launcher_pid=""
+}
+
+codex_micro_stop_watch
+codex_micro_stop_app
+```
+
+Do not replace these checks with `pkill`, `killall`, or a process-name match.
 
 ### Troubleshoot a missing socket
 
