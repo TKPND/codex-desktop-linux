@@ -22,6 +22,72 @@ function isIdentifierPart(character) {
   return character != null && /[A-Za-z0-9_$]/u.test(character);
 }
 
+const REGEX_PREFIX_KEYWORDS = new Set([
+  "await",
+  "case",
+  "delete",
+  "in",
+  "instanceof",
+  "new",
+  "of",
+  "return",
+  "throw",
+  "typeof",
+  "void",
+  "yield",
+]);
+
+function canStartRegularExpression(previousToken) {
+  if (previousToken == null) return true;
+  if (previousToken.type === "identifier") {
+    return REGEX_PREFIX_KEYWORDS.has(previousToken.value);
+  }
+  if (previousToken.type !== "punctuation") return false;
+  return ![")", "]", "}", "."].includes(previousToken.value);
+}
+
+function readRegularExpression(source, start) {
+  let index = start + 1;
+  let inCharacterClass = false;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === "\\") {
+      index += 2;
+      continue;
+    }
+    if (character === "\n" || character === "\r") {
+      drift("unterminated regular expression literal");
+    }
+    if (character === "[") {
+      inCharacterClass = true;
+      index += 1;
+      continue;
+    }
+    if (character === "]" && inCharacterClass) {
+      inCharacterClass = false;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && !inCharacterClass) {
+      let end = index + 1;
+      while (/[A-Za-z]/u.test(source[end] ?? "")) end += 1;
+      return {
+        token: {
+          type: "regex",
+          value: source.slice(start, end),
+          start,
+          end,
+          quote: null,
+          hasTemplateSubstitution: false,
+        },
+        next: end,
+      };
+    }
+    index += 1;
+  }
+  drift("unterminated regular expression literal");
+}
+
 function decodeEscape(source, index) {
   const character = source[index];
   const simple = {
@@ -62,12 +128,80 @@ function decodeEscape(source, index) {
   return { value: character, next: index + 1 };
 }
 
+function skipTemplateExpression(source, start) {
+  let depth = 1;
+  let index = start;
+  let previousToken = null;
+  while (index < source.length) {
+    const character = source[index];
+    if (/\s/u.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "/") {
+      const newline = source.indexOf("\n", index + 2);
+      index = newline === -1 ? source.length : newline + 1;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "*") {
+      const close = source.indexOf("*/", index + 2);
+      if (close === -1) drift("unterminated block comment in template substitution");
+      index = close + 2;
+      continue;
+    }
+    if (character === "/" && canStartRegularExpression(previousToken)) {
+      const regex = readRegularExpression(source, index);
+      previousToken = regex.token;
+      index = regex.next;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      const string = readString(source, index);
+      previousToken = string.token;
+      index = string.next;
+      continue;
+    }
+    if (isIdentifierStart(character)) {
+      let end = index + 1;
+      while (isIdentifierPart(source[end])) end += 1;
+      previousToken = {
+        type: "identifier",
+        value: source.slice(index, end),
+      };
+      index = end;
+      continue;
+    }
+    if (/[0-9]/u.test(character)) {
+      let end = index + 1;
+      while (/[A-Za-z0-9._]/u.test(source[end] ?? "")) end += 1;
+      previousToken = { type: "number", value: source.slice(index, end) };
+      index = end;
+      continue;
+    }
+    if (character === "{") {
+      depth += 1;
+      previousToken = { type: "punctuation", value: character };
+      index += 1;
+      continue;
+    }
+    if (character === "}") {
+      depth -= 1;
+      index += 1;
+      if (depth === 0) return index;
+      previousToken = { type: "punctuation", value: character };
+      continue;
+    }
+    previousToken = { type: "punctuation", value: character };
+    index += 1;
+  }
+  drift("unterminated template substitution");
+}
+
 function readString(source, start) {
   const quote = source[start];
   let index = start + 1;
   let value = "";
   let hasTemplateSubstitution = false;
-  let templateExpressionDepth = 0;
 
   while (index < source.length) {
     const character = source[index];
@@ -79,19 +213,9 @@ function readString(source, start) {
     }
     if (quote === "`" && character === "$" && source[index + 1] === "{") {
       hasTemplateSubstitution = true;
-      templateExpressionDepth += 1;
-      value += "${";
-      index += 2;
-      continue;
-    }
-    if (quote === "`" && templateExpressionDepth > 0) {
-      if (character === "{") templateExpressionDepth += 1;
-      if (character === "}") templateExpressionDepth -= 1;
-      if (character === "`" || character === "'" || character === '"') {
-        drift("unsupported nested template expression");
-      }
-      value += character;
-      index += 1;
+      const expressionStart = index;
+      index = skipTemplateExpression(source, index + 2);
+      value += source.slice(expressionStart, index);
       continue;
     }
     if (character === quote) {
@@ -137,6 +261,12 @@ function tokenizeJavaScript(source) {
       index = close + 2;
       continue;
     }
+    if (character === "/" && canStartRegularExpression(tokens.at(-1))) {
+      const regex = readRegularExpression(source, index);
+      tokens.push(regex.token);
+      index = regex.next;
+      continue;
+    }
     if (character === "'" || character === '"' || character === "`") {
       const string = readString(source, index);
       tokens.push(string.token);
@@ -148,6 +278,20 @@ function tokenizeJavaScript(source) {
       while (isIdentifierPart(source[end])) end += 1;
       tokens.push({
         type: "identifier",
+        value: source.slice(index, end),
+        start: index,
+        end,
+        quote: null,
+        hasTemplateSubstitution: false,
+      });
+      index = end;
+      continue;
+    }
+    if (/[0-9]/u.test(character)) {
+      let end = index + 1;
+      while (/[A-Za-z0-9._]/u.test(source[end] ?? "")) end += 1;
+      tokens.push({
+        type: "number",
         value: source.slice(index, end),
         start: index,
         end,
@@ -174,11 +318,16 @@ const DELIMITER_PAIRS = new Map([["(", ")"], ["{", "}"], ["[", "]"]]);
 const CLOSING_DELIMITERS = new Set(DELIMITER_PAIRS.values());
 
 function findMatchingDelimiter(tokens, openIndex) {
-  const opening = tokens[openIndex]?.value;
-  if (!DELIMITER_PAIRS.has(opening)) drift("delimiter search did not start at an opener");
+  const openingToken = tokens[openIndex];
+  const opening = openingToken?.value;
+  if (openingToken?.type !== "punctuation" || !DELIMITER_PAIRS.has(opening)) {
+    drift("delimiter search did not start at an opener");
+  }
   const stack = [];
   for (let index = openIndex; index < tokens.length; index += 1) {
-    const value = tokens[index].value;
+    const token = tokens[index];
+    if (token.type !== "punctuation") continue;
+    const value = token.value;
     if (DELIMITER_PAIRS.has(value)) {
       stack.push(DELIMITER_PAIRS.get(value));
       continue;
@@ -196,7 +345,12 @@ function classRanges(tokens) {
   for (let classIndex = 0; classIndex < tokens.length; classIndex += 1) {
     if (tokens[classIndex].type !== "identifier" || tokens[classIndex].value !== "class") continue;
     let openIndex = classIndex + 1;
-    while (openIndex < tokens.length && tokens[openIndex].value !== "{") openIndex += 1;
+    while (
+      openIndex < tokens.length &&
+      (tokens[openIndex].type !== "punctuation" || tokens[openIndex].value !== "{")
+    ) {
+      openIndex += 1;
+    }
     if (openIndex === tokens.length) drift("class body is missing");
     const closeIndex = findMatchingDelimiter(tokens, openIndex);
     ranges.push({ openIndex, closeIndex });
@@ -209,17 +363,21 @@ function classMethods(tokens, classRange) {
   let index = classRange.openIndex + 1;
   while (index < classRange.closeIndex) {
     const token = tokens[index];
-    if (DELIMITER_PAIRS.has(token.value)) {
+    if (token.type === "punctuation" && DELIMITER_PAIRS.has(token.value)) {
       index = findMatchingDelimiter(tokens, index) + 1;
       continue;
     }
     if (
       token.type === "identifier" &&
+      tokens[index + 1]?.type === "punctuation" &&
       tokens[index + 1]?.value === "("
     ) {
       const parametersCloseIndex = findMatchingDelimiter(tokens, index + 1);
       const bodyOpenIndex = parametersCloseIndex + 1;
-      if (tokens[bodyOpenIndex]?.value === "{") {
+      if (
+        tokens[bodyOpenIndex]?.type === "punctuation" &&
+        tokens[bodyOpenIndex]?.value === "{"
+      ) {
         const bodyCloseIndex = findMatchingDelimiter(tokens, bodyOpenIndex);
         if (bodyCloseIndex > classRange.closeIndex) drift("class method exceeds class body");
         methods.push({

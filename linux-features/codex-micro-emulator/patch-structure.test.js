@@ -106,6 +106,25 @@ test("scanner records template substitution instead of accepting it as a module 
   assert.equal(request.hasTemplateSubstitution, true);
 });
 
+test("scanner safely skips quoted and nested templates inside substitutions", () => {
+  const source = [
+    "const label=`prefix ${condition&&`nested ${value.replace(/'/g, \"quoted\")}`} suffix`;",
+    'require("./codex-micro-service-C0OetNTY.js")',
+  ].join("");
+  const tokens = tokenizeJavaScript(source);
+  const strings = tokens.filter(({ type }) => type === "string");
+  assert.equal(strings[0].hasTemplateSubstitution, true);
+  assert.equal(strings.at(-1).value, "./codex-micro-service-C0OetNTY.js");
+  assert.equal(strings.at(-1).hasTemplateSubstitution, false);
+});
+
+test("scanner skips regular expressions that contain structural decoys", () => {
+  const source = "/class Fake{}[\"']/g;class Manager{constructor(){this.ready=true}}";
+  const tokens = tokenizeJavaScript(source);
+  assert.equal(tokens.filter(({ type }) => type === "regex").length, 1);
+  assert.equal(classRanges(tokens).length, 1);
+});
+
 test("scanner skips comments and returns balanced class method bodies", () => {
   const source = "/* class Fake{} */ class Manager{constructor(e){this.w=e}// }\ngetState(){return this.w}}";
   const tokens = tokenizeJavaScript(source);
@@ -120,6 +139,15 @@ test("scanner skips comments and returns balanced class method bodies", () => {
     "getState",
   ]);
   assert.equal(tokens[findMatchingDelimiter(tokens, ranges[0].openIndex)].value, "}");
+});
+
+test("delimiter matching ignores delimiter-shaped string values", () => {
+  const tokens = tokenizeJavaScript(
+    'class Manager{method(){return value.startsWith("{")||value.startsWith("[")}}',
+  );
+  const ranges = classRanges(tokens);
+  assert.equal(ranges.length, 1);
+  assert.deepEqual(classMethods(tokens, ranges[0]).map(({ name }) => name), ["method"]);
 });
 
 test("scanner rejects mismatched delimiters", () => {
