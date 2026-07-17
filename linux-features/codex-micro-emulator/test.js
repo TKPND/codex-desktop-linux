@@ -9,6 +9,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 
 const MODULE_RUNTIME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "codex-micro-module-"));
 const ORIGINAL_STATE_DIR = process.env.CODEX_LINUX_APP_STATE_DIR;
@@ -41,7 +42,7 @@ const FEATURES_ROOT = path.resolve(FEATURE_DIR, "..");
 const CLI = path.join(FEATURE_DIR, "bin", "codex-micro-emulator");
 const PYTHON = spawnSync("python3", ["--version"], { encoding: "utf8" }).status === 0 ? "python3" : null;
 const PATCH_SKIP_WARNING =
-  "WARN: current Codex Micro service constructor was not found exactly once - skipping Codex Micro emulator patch";
+  "WARN: current Codex Micro service and manager constructors were not found exactly once - skipping Codex Micro emulator patch";
 
 test.after(async () => {
   await defaultRuntime.close();
@@ -234,7 +235,9 @@ async function assertReplacementSocketSurvivesClose(closeMode) {
 function currentMainBundleFixture() {
   return [
     "const codexMicroUntouchedBefore=42;",
-    "class eS{getService(){return this.service==null?(this.servicePromise??=",
+    "class eS{service=null;servicePromise=null;constructor(e){this.windowManager=e}",
+    "async getState(){let e=await this.getService();return e.start(),e.getState()}",
+    "getService(){return this.service==null?(this.servicePromise??=",
     "Promise.resolve().then(()=>require(`./codex-micro-service-CR6sUcZG.js`))",
     ".then(({CodexMicroService:e})=>{let t=new e({",
     "onDeviceStateChanged:e=>{this.windowManager.sendMessageToAllWindows({type:`codex-micro-device-state-changed`,state:e})},",
@@ -289,12 +292,21 @@ test("declarative staging preserves module and CLI targets and modes", () => {
 });
 
 test("patch injects one staged module load and is byte-idempotent", () => {
-  const { applyCodexMicroEmulatorPatch, PATCH_MARKER } = require("./patch.js");
+  const {
+    applyCodexMicroEmulatorPatch,
+    BOOTSTRAP_MARKER,
+    PATCH_MARKER,
+  } = require("./patch.js");
   const source = currentMainBundleFixture();
   const patched = applyCodexMicroEmulatorPatch(source);
   assert.notEqual(patched, source);
   assert.equal(applyCodexMicroEmulatorPatch(patched), patched);
   assert.equal(patched.split(PATCH_MARKER).length - 1, 1);
+  assert.equal(patched.split(BOOTSTRAP_MARKER).length - 1, 1);
+  assert.equal(
+    patched.split("codexLinuxBootstrapCodexMicroEmulator(this)").length - 1,
+    1,
+  );
   assert.match(patched, /\.\.\.codexLinuxCodexMicroEmulatorOptions\(\)/);
   assert.match(patched, /\.codex-linux.*codex-micro-emulator.*emulator\.cjs/);
   assert.match(patched, /onDeviceStateChanged/);
@@ -305,20 +317,61 @@ test("patch injects one staged module load and is byte-idempotent", () => {
 });
 
 test("patch fails closed when the current constructor is absent or duplicated", () => {
-  const { applyCodexMicroEmulatorPatch } = require("./patch.js");
+  const {
+    applyCodexMicroEmulatorPatch,
+    BOOTSTRAP_MARKER,
+    PATCH_MARKER,
+  } = require("./patch.js");
   const source = currentMainBundleFixture();
   const warnings = [];
   const previousWarn = console.warn;
   console.warn = (...args) => warnings.push(args.join(" "));
   try {
-    const missing = source.replace("onJoystickEvent", "onStickEvent");
-    assert.equal(applyCodexMicroEmulatorPatch(missing), missing);
+    const missingService = source.replace("onJoystickEvent", "onStickEvent");
+    const missingManager = source.replace(
+      "service=null;servicePromise=null;constructor(e){this.windowManager=e}",
+      "service=null;servicePromise=null;constructor(e){this.windows=e}",
+    );
     const duplicated = `${source};${source}`;
+    const optionsOnly = `${source};${PATCH_MARKER}`;
+    const bootstrapOnly = `${source};${BOOTSTRAP_MARKER}`;
+    assert.equal(applyCodexMicroEmulatorPatch(missingService), missingService);
+    assert.equal(applyCodexMicroEmulatorPatch(missingManager), missingManager);
     assert.equal(applyCodexMicroEmulatorPatch(duplicated), duplicated);
+    assert.equal(applyCodexMicroEmulatorPatch(optionsOnly), optionsOnly);
+    assert.equal(applyCodexMicroEmulatorPatch(bootstrapOnly), bootstrapOnly);
   } finally {
     console.warn = previousWarn;
   }
-  assert.deepEqual(warnings, [PATCH_SKIP_WARNING, PATCH_SKIP_WARNING]);
+  assert.deepEqual(warnings, Array(5).fill(PATCH_SKIP_WARNING));
+});
+
+test("automatic bootstrap calls getState once and contains rejection", async () => {
+  const { bootstrapHelperSource } = require("./patch.js");
+  const errors = [];
+  const context = {
+    console: { error: (...args) => errors.push(args) },
+  };
+  vm.runInNewContext(
+    `${bootstrapHelperSource()};globalThis.bootstrap=codexLinuxBootstrapCodexMicroEmulator`,
+    context,
+  );
+  const failure = new Error("bootstrap failed");
+  let calls = 0;
+  const result = context.bootstrap({
+    getState() {
+      calls += 1;
+      return Promise.reject(failure);
+    },
+  });
+
+  assert.equal(result, undefined);
+  await new Promise(setImmediate);
+  assert.equal(calls, 1);
+  assert.deepEqual(errors, [[
+    "[codex-micro-emulator] automatic bootstrap failed",
+    failure,
+  ]]);
 });
 
 test("HID framing uses byte boundaries, headers, and zero padding", () => {

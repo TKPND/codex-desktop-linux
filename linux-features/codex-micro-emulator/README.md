@@ -49,6 +49,8 @@ codex_micro_cli=codex-app/resources/native/codex-micro-emulator
 
 The seven command groups are `status`, `watch`, `connect`, `disconnect`, `key`, `encoder`, and `joystick`. `watch --raw` preserves each JSONL record; plain `watch` renders the high-signal fields.
 
+Enabling the feature automatically bootstraps the existing upstream service-manager `getState()` path once at application launch. Renderer gate `3207467860` and Codex Micro UI visibility are unchanged, so the emulator may run without visible Codex Micro UI.
+
 - `key <name> <action>` allows `AG00` through `AG05`, `ACT06` through `ACT12`, and `ENC_SW`, with `press`, `release`, or `tap`.
 - `encoder <direction> [--steps N]` allows `cw` or `ccw`; `N` defaults to 1 and must be from 1 through 100.
 - `joystick <direction>` allows `up`, `right`, `down`, `left`, or `center`.
@@ -79,6 +81,8 @@ Simulated HID framing uses report ID `0x06`, channel `0x02`, up to 61 payload by
 Raw Codex Micro RPC payloads are private debug data. Observed traffic currently concerns device lighting and status rather than prompts, but traces can still reveal app behavior and must be reviewed before sharing.
 
 Trace durability is fail-closed: if the trace or control socket fails, the virtual device disconnects and stops accepting typed input. If the enabled patch no longer matches the current upstream bundle, feature drift rejects the rebuild candidate instead of promoting an app without the requested emulator.
+
+If automatic bootstrap rejects, the app logs `[codex-micro-emulator] automatic bootstrap failed`, keeps running, and leaves the emulator unavailable.
 
 ## Verify a generated candidate
 
@@ -234,9 +238,7 @@ Do not replace these checks with `pkill`, `killall`, or a process-name match.
 
 ### Troubleshoot a missing socket
 
-Emulator service startup is lazy. The staged module is not loaded until the upstream renderer mounts `CodexMicroBridge` and requests Codex Micro state. If the socket never appears, upstream Codex Micro availability or gating may be preventing that bridge from mounting; socket absence alone does not prove that any particular gate returned `false`.
-
-First confirm that the generated candidate contains the exact applied feature patch and staged files shown above. Then inspect the current upstream bridge mount path and account availability. Do not force or invent a local gate override as part of emulator troubleshooting.
+The enabled feature bootstraps the upstream service manager automatically at application launch; startup is not renderer-lazy. If the socket never appears, confirm the generated candidate contains the exact applied feature patch and staged files shown above, inspect the `[codex-micro-emulator] automatic bootstrap failed` log path, verify the isolated runtime paths, and diagnose emulator startup. Forcing renderer gate `3207467860` does not repair a missing socket and is not part of emulator troubleshooting.
 
 ## Future Air60 V2 integration
 
