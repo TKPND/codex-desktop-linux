@@ -345,6 +345,15 @@
           stdenv.cc.cc.lib
           zlib
         ]);
+        gsettingsSchemaPackages = with pkgs; [
+          gsettings-desktop-schemas
+          gtk3
+        ];
+        gsettingsSchemaRoot = pkg:
+          pkgs.lib.removeSuffix "/glib-2.0/schemas" (pkgs.glib.getSchemaPath pkg);
+        gsettingsSchemaDataDirs =
+          pkgs.lib.concatMapStringsSep ":" gsettingsSchemaRoot gsettingsSchemaPackages;
+        xdgDefaultDataDirs = "/usr/local/share:/usr/share";
         launcherPath = pkgs.lib.makeBinPath (with pkgs; [
           bash
           coreutils
@@ -688,6 +697,8 @@ PY
 
             makeWrapper "$out/opt/codex-desktop/start.sh" "$out/bin/codex-desktop" \
               --prefix PATH : "${payloadLauncherPath}" \
+              --run 'export XDG_DATA_DIRS="''${XDG_DATA_DIRS:-${xdgDefaultDataDirs}}"' \
+              --prefix XDG_DATA_DIRS : "${gsettingsSchemaDataDirs}" \
               --prefix PATH : "/run/current-system/sw/bin" \
               --prefix PATH : "/etc/profiles/per-user/$(whoami)/bin"
 
@@ -785,6 +796,43 @@ PY
           notification-actions-linux = codexNotificationActionsBinary;
           notification-actions-installer = pkgs.runCommand "codex-notification-actions-installer-check" { } ''
             grep -F 'CODEX_NOTIFICATION_ACTIONS_SOURCE=' ${installer}/bin/codex-desktop-installer >/dev/null
+            touch "$out"
+          '';
+          nix-gsettings-schema-wrapper = pkgs.runCommand "codex-desktop-nix-gsettings-schema-wrapper-check" { } ''
+            schema_data_dirs=${pkgs.lib.escapeShellArg gsettingsSchemaDataDirs}
+            default_data_dirs=${pkgs.lib.escapeShellArg xdgDefaultDataDirs}
+            explicit_data_dirs=/custom/share:/other/share
+
+            run_wrapper() {
+              case "$1" in
+                unset) unset XDG_DATA_DIRS ;;
+                empty) export XDG_DATA_DIRS= ;;
+                populated) export XDG_DATA_DIRS="$explicit_data_dirs" ;;
+                *) echo "unknown test case: $1" >&2; return 1 ;;
+              esac
+
+              exec() {
+                printf '%s\n' "$XDG_DATA_DIRS"
+              }
+
+              source ${codexDesktop}/bin/codex-desktop
+            }
+
+            assert_data_dirs() {
+              test_case="$1"
+              expected="$2"
+              actual="$(run_wrapper "$test_case")"
+              if [ "$actual" != "$expected" ]; then
+                printf '%s: expected <%s>, got <%s>\n' \
+                  "$test_case" "$expected" "$actual" >&2
+                return 1
+              fi
+            }
+
+            expected_defaults="$schema_data_dirs:$default_data_dirs"
+            assert_data_dirs unset "$expected_defaults"
+            assert_data_dirs empty "$expected_defaults"
+            assert_data_dirs populated "$schema_data_dirs:$explicit_data_dirs"
             touch "$out"
           '';
           nix-linux-features-evaluation = import ./nix/linux-features-test.nix {
