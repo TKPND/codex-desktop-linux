@@ -8,6 +8,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 require("./dock-icon.test.js");
+require("./suggested-prompts.test.js");
 
 const {
   discoverLinuxFeatureManifests,
@@ -178,6 +179,10 @@ test("ui-tweaks is discoverable and disabled until listed in features.json", () 
         ["feature:ui-tweaks:appearance-dock-icon-main-process", "main-bundle", "optional"],
         ["feature:ui-tweaks:appearance-dock-icon-settings-row", "webview-asset", "optional"],
         ["feature:ui-tweaks:appearance-dock-icon-settings-search", "webview-asset", "optional"],
+        ["feature:ui-tweaks:home-suggested-prompts-main-process", "main-bundle", "optional"],
+        ["feature:ui-tweaks:home-suggested-prompts-app-page", "webview-asset", "optional"],
+        ["feature:ui-tweaks:home-suggested-prompts-settings-row", "webview-asset", "optional"],
+        ["feature:ui-tweaks:home-suggested-prompts-content", "webview-asset", "optional"],
       ],
     );
   } finally {
