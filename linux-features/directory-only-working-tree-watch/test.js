@@ -12,6 +12,7 @@ const test = require("node:test");
 
 const {
   DEFAULT_IGNORED_DIRECTORY_NAMES,
+  SHALLOW_RECURSIVE_WATCH_MARKER,
   codexLinuxStartDirectoryOnlyWorkingTreeWatch,
   descriptors,
   normalizedSettings,
@@ -157,12 +158,55 @@ test("feature patch targets only the local recursive working-tree host", () => {
     /process\.platform===`linux`&&e\.recursive&&e\.renameEventHandling===`changed-path-with-parent-directory`/,
   );
   assert.match(first.source, /return codexLinuxStartDirectoryOnlyWorkingTreeWatch\(this,e,/);
+  assert.match(
+    first.source,
+    /process\.platform===`linux`&&e\.recursive\)\{\/\*codexLinuxShallowRecursiveWatch\*\/e=\{\.\.\.e,recursive:!1\}\}/,
+  );
+  assert.equal(SHALLOW_RECURSIVE_WATCH_MARKER, "codexLinuxShallowRecursiveWatch");
   assert.match(first.source, /\(0,w\.watch\)\(this\.getFileSystemPath/);
 
   const second = patchWorkerSource(first.source, settings);
   assert.equal(second.matched, 1);
   assert.equal(second.changed, 0);
   assert.equal(second.source, first.source);
+});
+
+test("feature downgrades non-working-tree recursive watches on Linux", async () => {
+  const result = patchWorkerSource(localWorkerSource(), normalizedSettings());
+  const watchCalls = [];
+  const LocalHost = new Function(
+    "require",
+    "process",
+    "E",
+    "jH",
+    "w",
+    `${result.source};return LocalHost;`,
+  )(
+    require,
+    { platform: "linux" },
+    { default: { posix: path.posix } },
+    () => ({ promise: Promise.resolve() }),
+    {
+      watch: (watchedPath, options) => {
+        watchCalls.push({ watchedPath, options });
+        return { close() {}, on() {} };
+      },
+    },
+  );
+  const host = new LocalHost();
+  host.getFileSystemPath = (value) => value;
+
+  const session = await host.startFileWatch({
+    path: "/repo/.git/refs",
+    recursive: true,
+    renameEventHandling: "changed-path",
+  });
+
+  assert.deepEqual(watchCalls, [{
+    watchedPath: "/repo/.git/refs",
+    options: { recursive: false },
+  }]);
+  assert.deepEqual(session.coverage, { recursive: false });
 });
 
 test("feature patch reports drift instead of patching an ambiguous worker", () => {

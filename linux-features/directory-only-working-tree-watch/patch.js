@@ -6,6 +6,7 @@ const path = require("node:path");
 const HELPER_NAME = "codexLinuxStartDirectoryOnlyWorkingTreeWatch";
 const DEFAULT_MAX_WATCHES = 8192;
 const DEFAULT_IGNORED_DIRECTORY_NAMES = [];
+const SHALLOW_RECURSIVE_WATCH_MARKER = "codexLinuxShallowRecursiveWatch";
 const LOCAL_FILE_WATCH_METHOD =
   /async startFileWatch\((?<options>[A-Za-z_$][\w$]*)\)\{(?=let [^{}]{0,180}?await this\.platformPath\(\),[^{}]{0,180}?\(0,[A-Za-z_$][\w$]*\.watch\)\(this\.getFileSystemPath\(\k<options>\.path\),\{recursive:\k<options>\.recursive\})/gu;
 
@@ -2151,15 +2152,18 @@ function patchWorkerSource(source, settings) {
   const helperCount = source.split(`function ${HELPER_NAME}(`).length - 1;
   const branchMarker = `return ${HELPER_NAME}(this,`;
   const branchCount = source.split(branchMarker).length - 1;
-  if (helperCount === 1 && branchCount === 1) {
+  const shallowBranchCount = source.split(SHALLOW_RECURSIVE_WATCH_MARKER).length - 1;
+  if (helperCount === 1 && branchCount === 1 && shallowBranchCount === 1) {
     return { source, matched: 1, changed: 0, reason: null };
   }
-  if (helperCount !== 0 || branchCount !== 0) {
+  if (helperCount !== 0 || branchCount !== 0 || shallowBranchCount !== 0) {
     return {
       source,
       matched: 0,
       changed: 0,
-      reason: `Found ${helperCount} helper definitions and ${branchCount} working-tree branches`,
+      reason:
+        `Found ${helperCount} helper definitions, ${branchCount} working-tree branches, ` +
+        `and ${shallowBranchCount} shallow recursive-watch branches`,
     };
   }
 
@@ -2179,7 +2183,10 @@ function patchWorkerSource(source, settings) {
   const branch =
     `if(process.platform===\`linux\`&&${optionsName}.recursive&&` +
     `${optionsName}.renameEventHandling===\`changed-path-with-parent-directory\`)` +
-    `return ${HELPER_NAME}(this,${optionsName},${JSON.stringify(settings)});`;
+    `return ${HELPER_NAME}(this,${optionsName},${JSON.stringify(settings)});` +
+    `if(process.platform===\`linux\`&&${optionsName}.recursive){` +
+    `/*${SHALLOW_RECURSIVE_WATCH_MARKER}*/` +
+    `${optionsName}={...${optionsName},recursive:!1}}`;
   const methodStart = match.index + match[0].length;
   const withBranch = source.slice(0, methodStart) + branch + source.slice(methodStart);
   const helper = `${codexLinuxStartDirectoryOnlyWorkingTreeWatch.toString()};`;
@@ -2204,7 +2211,8 @@ function findLocalFileWatchBundle(extractedDir, settings) {
     const source = fs.readFileSync(bundlePath, "utf8");
     const helperCount = source.split(`function ${HELPER_NAME}(`).length - 1;
     const branchCount = source.split(`return ${HELPER_NAME}(this,`).length - 1;
-    if (helperCount > 0 || branchCount > 0) {
+    const shallowBranchCount = source.split(SHALLOW_RECURSIVE_WATCH_MARKER).length - 1;
+    if (helperCount > 0 || branchCount > 0 || shallowBranchCount > 0) {
       alreadyPatched.push({ bundlePath, source, result: patchWorkerSource(source, settings) });
       continue;
     }
@@ -2279,6 +2287,7 @@ module.exports = {
   DEFAULT_MAX_WATCHES,
   HELPER_NAME,
   LOCAL_FILE_WATCH_METHOD,
+  SHALLOW_RECURSIVE_WATCH_MARKER,
   codexLinuxStartDirectoryOnlyWorkingTreeWatch,
   descriptors,
   findLocalFileWatchBundle,

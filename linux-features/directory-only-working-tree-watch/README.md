@@ -1,4 +1,4 @@
-# Directory-Only Working-Tree Watch
+# Directory-Only Repository Watches
 
 This opt-in Linux feature replaces Codex Desktop's recursive working-tree
 `fs.watch` call with one non-recursive watch per relevant directory. Electron's
@@ -11,6 +11,13 @@ as directories are created, renamed, deleted, or replaced. It skips recursive
 traversal of every `.git` directory; Codex retains its dedicated Git metadata
 watches, and this feature adds small directory watches around the Git index and
 `.git/info/exclude` so ignore topology follows index and exclude changes.
+
+Codex also opens short-lived repository and Git metadata watches when sidebar
+task previews are hovered. Those watches are kept non-recursive on Linux. This
+avoids Node's JavaScript recursive-watch implementation synchronously walking
+the repository and `.git/refs` trees on Electron's main thread merely to show a
+task preview. The reduced coverage is reported back to Codex so its existing
+focus-recovery path remains active.
 
 Directories are pruned only when Git confirms that the directory itself is
 ignored and untracked. An unignored wrapper directory remains watched even if
@@ -137,6 +144,9 @@ covered by the dedicated metadata watches:
   reconciliation rather than retaining or synchronously probing every path.
 - This is an upstream-bundle patch. Drift in the enabled feature rejects a
   rebuild candidate instead of silently restoring the unbounded watcher.
+- Dedicated repository metadata watches are shallow on Linux. Deep ref updates
+  may therefore refresh when Codex regains focus rather than immediately while
+  the window remains focused.
 
 Before considering this feature for default or core Linux behavior, persistent
 zero-watch coverage should gain a deduplicated in-app notice with an Open Logs
