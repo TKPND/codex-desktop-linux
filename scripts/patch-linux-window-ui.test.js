@@ -6251,6 +6251,30 @@ test("adds the Linux desktop icon to the current split settings icon map", () =>
   );
 });
 
+test("rejects duplicate current split settings icon maps", () => {
+  const source = [
+    'var Z={"general-settings":N,import:ye,"keyboard-shortcuts":X};',
+    'var Q={"general-settings":M,profile:ze,"keyboard-shortcuts":Y};',
+  ].join("");
+
+  assert.throws(
+    () => applyLinuxDesktopSettingsIconPatch(source),
+    /expected exactly one settings icon map \(found 2, 0 already patched\)/,
+  );
+});
+
+test("rejects partially patched duplicate current split settings icon maps", () => {
+  const source = [
+    'var Z={"linux-desktop":N,"general-settings":N,import:ye,"keyboard-shortcuts":X};',
+    'var Q={"general-settings":M,profile:ze,"keyboard-shortcuts":Y};',
+  ].join("");
+
+  assert.throws(
+    () => applyLinuxDesktopSettingsIconPatch(source),
+    /expected exactly one settings icon map \(found 2, 1 already patched\)/,
+  );
+});
+
 test("adds Linux desktop section to current native Keyboard Shortcuts sections bundle", () => {
   const source =
     "var e=[`general-settings`,`profile`,`keyboard-shortcuts`,`account`],t=`general-settings`,n=function(){},r=[{slug:`general-settings`},{slug:`profile`},{slug:`appearance`},{slug:`keyboard-shortcuts`}];";

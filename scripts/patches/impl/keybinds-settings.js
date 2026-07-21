@@ -1167,13 +1167,20 @@ function applyLinuxDesktopSettingsRoutePatch(
 }
 
 function applyLinuxDesktopSettingsIconPatch(currentSource) {
-  if (/[A-Za-z_$][\w$]*=\{"linux-desktop":[A-Za-z_$][\w$]*,"general-settings":[A-Za-z_$][\w$]*,/.test(currentSource)) {
+  const patchedIconPattern = /[A-Za-z_$][\w$]*=\{"linux-desktop":[A-Za-z_$][\w$]*,"general-settings":[A-Za-z_$][\w$]*,(?=[^;]{0,3000}"keyboard-shortcuts":[A-Za-z_$][\w$]*[,}])/g;
+  const iconPattern = /([A-Za-z_$][\w$]*=\{)"general-settings":([A-Za-z_$][\w$]*),(?=[^;]{0,3000}"keyboard-shortcuts":[A-Za-z_$][\w$]*[,}])/g;
+  const patchedCount = currentSource.match(patchedIconPattern)?.length ?? 0;
+  const unpatchedCount = currentSource.match(iconPattern)?.length ?? 0;
+
+  if (patchedCount === 1 && unpatchedCount === 0) {
     return currentSource;
   }
 
-  const iconPattern = /([A-Za-z_$][\w$]*=\{)"general-settings":([A-Za-z_$][\w$]*),(?=[^;]{0,3000}"keyboard-shortcuts":[A-Za-z_$][\w$]*[,}])/;
-  if (!iconPattern.test(currentSource)) {
-    throw new Error("Required Keybinds settings patch failed: could not add Linux desktop icon");
+  const iconMapCount = patchedCount + unpatchedCount;
+  if (patchedCount !== 0 || unpatchedCount !== 1) {
+    throw new Error(
+      `Required Keybinds settings patch failed: expected exactly one settings icon map (found ${iconMapCount}, ${patchedCount} already patched)`,
+    );
   }
 
   return currentSource.replace(
