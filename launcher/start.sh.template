@@ -269,7 +269,6 @@ resolve_webview_renderer_url() {
     fi
     if ! index_sha256="$(sha256sum "$webview_index" 2>/dev/null | awk '{print $1}')" ||
        [[ ! "$index_sha256" =~ ^[0-9a-f]{64}$ ]]; then
-        launcher_notice "$CODEX_LINUX_APP_DISPLAY_NAME could not fingerprint $webview_index; install coreutils and rebuild the app."
         return 1
     fi
 
@@ -285,7 +284,10 @@ select_webview_renderer_url() {
         return 0
     fi
 
-    WEBVIEW_RENDERER_URL="$(resolve_webview_renderer_url)" || return 1
+    if ! WEBVIEW_RENDERER_URL="$(resolve_webview_renderer_url)"; then
+        launcher_notice "$CODEX_LINUX_APP_DISPLAY_NAME could not fingerprint $WEBVIEW_DIR/index.html; install coreutils and rebuild the app."
+        return 1
+    fi
 }
 
 WEBVIEW_RENDERER_URL=""

@@ -5008,6 +5008,7 @@ SCRIPT
     [ "$rc" -ne 0 ] || fail "Launcher should fail when the webview fingerprint cannot be calculated"
     [ ! -e "$electron_marker" ] || fail "Fingerprint failure should stop before Electron"
     assert_contains "$fingerprint_error" "could not fingerprint"
+    assert_contains "$launcher_log" "could not fingerprint"
 
     rm -f "$electron_marker"
     set +e
