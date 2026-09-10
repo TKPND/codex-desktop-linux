@@ -15,13 +15,20 @@ const {
   CATALOG_PRESET_OPTIONS_KEY,
   EFFORT_TO_THINKING_EFFORT,
   LOCAL_DEFAULT_PATCH_MARKER,
+  LOCAL_COMPOSER_CONFIG_MARKER,
+  LOCAL_COMPOSER_RESOLVER_MARKER,
+  LOCAL_DRAFT_SELECTION_MARKER,
   SLIDER_PATCH_MARKER,
   applyCatalogPatch,
+  applyLocalComposerConfigPatch,
+  applyLocalComposerResolverPatch,
   applySliderMinimumPatch,
   catalogAssetMatch,
   catalogPatchContract,
   codexLinuxModelPickerDefaultPresets,
   normalizePresets,
+  localComposerConfigContract,
+  localComposerResolverContract,
   sliderAssetMatch,
   sliderPatchContract,
 } = require("./patch.js");
@@ -65,6 +72,34 @@ function sliderFixture(name = "Wkr") {
     "show_xhigh_in_simple_picker=true,canInitializePowerPicker=true;",
     "if(powerSelectionsWithXHigh.length>=3)return powerSelectionsWithXHigh;",
     "return fallbackPowerSelection.length>=3?fallbackPowerSelection:[]}",
+    "function Next(){}",
+  ].join("");
+}
+
+function localComposerResolverFixture(name = "LocalPower") {
+  return [
+    `function ${name}(e,{includeUltraInSlider:t=false,removeXHigh:n=false,sliderModelsConfig:r,stripGptPrefix:i=true}={}){`,
+    "if(r!=null){let a=MapModels(e,{stripGptPrefix:i});for(let o of r.presets){",
+    "let r=unique(resolve(o.filter(({reasoning_effort:e})=>(t||e!==`ultra`)&&(!n||e!==`xhigh`)),e,i),({id:e})=>e);",
+    "if(r.length>=3)return r}}let a=fallbackA(e);if(a.length>=3)return a;",
+    "let o=fallbackB(e);return o.length>=3?o:[]}",
+    "function Next(){}",
+  ].join("");
+}
+
+function localComposerFixture(name = "LocalComposer") {
+  return [
+    `function ${name}(available,serverConfig,conversationId,manualSelection){`,
+    "let host={hostId:`local`,cwd:`/repo`};",
+    "modelsForPicker(available);let{setDefaultModelAndReasoningEffort:setDefault}=selection;",
+    "let He=available.find(Wqr),Ue=Power(available,{includeUltraInSlider:true,sliderModelsConfig:serverConfig,stripGptPrefix:true}),",
+    "Ge=Ue,Ke=zae(Ge,He==null?void 0:`${He.model}:${He.defaultReasoningEffort}`);",
+    "let scratch=(0,React.useRef)(null),choose=function(e,t){return(draft?.selectModelAndReasoningEffort??select)(e,t,()=>{})};",
+    "let selected=manualSelection?choose(`gpt-5.6-sol`,`high`):null;",
+    "picker({resetContextKey:JSON.stringify([conversationId,host.hostId,host.cwd])});",
+    "composer.mode.local.model.custom;let reset=zae(Ue,He==null?void 0:`${He.model}:${He.defaultReasoningEffort}`);",
+    "render({onSelectDefault:reset});",
+    "return{powerSelections:Ue,fallback:Ke,reset,selected}}",
     "function Next(){}",
   ].join("");
 }
@@ -361,6 +396,275 @@ test("slider patch fails closed on drift, duplicate, and partial states", () => 
   }
 });
 
+test("local composer uses configured pairs and lowers only its config threshold", () => {
+  const presets = context([
+    { model: "gpt-5.6-sol", effort: "medium", default: true },
+    { model: "gpt-5.6-sol", effort: "high" },
+    { model: "gpt-6-astra", effort: "high" },
+  ]);
+  const resolverSource = localComposerResolverFixture();
+  assert.equal(localComposerResolverContract(resolverSource), "current");
+  const patchedResolver = applyLocalComposerResolverPatch(resolverSource, presets);
+  assert.equal(localComposerResolverContract(patchedResolver), "applied");
+  assert.equal(applyLocalComposerResolverPatch(patchedResolver, presets), patchedResolver);
+  assert.equal(
+    (patchedResolver.match(new RegExp(LOCAL_COMPOSER_RESOLVER_MARKER, "g")) ?? []).length,
+    1,
+  );
+  const resolverGlobals = {
+    fallbackA: () => [],
+    fallbackB: () => [],
+    MapModels: (models) => models,
+    resolve: (entries) => entries.map(({ model, reasoning_effort: reasoningEffort }) => ({
+      id: `${model}:${reasoningEffort}`,
+      model,
+      reasoningEffort,
+    })),
+    unique: (entries) => entries,
+  };
+  const onePairConfig = {
+    codexLinuxDefaultPresets: true,
+    presets: [[{ model: "gpt-5.6-sol", reasoning_effort: "high" }]],
+  };
+  assert.equal(
+    evaluate(
+      patchedResolver,
+      "LocalPower([],{sliderModelsConfig:config}).length",
+      { ...resolverGlobals, config: onePairConfig },
+    ),
+    1,
+  );
+  assert.equal(
+    evaluate(
+      patchedResolver,
+      "LocalPower([],{sliderModelsConfig:config}).length",
+      { ...resolverGlobals, config: { presets: onePairConfig.presets } },
+    ),
+    0,
+  );
+
+  const composerSource = localComposerFixture();
+  assert.equal(localComposerConfigContract(composerSource), "current");
+  const patchedComposer = applyLocalComposerConfigPatch(composerSource, presets);
+  assert.equal(localComposerConfigContract(patchedComposer), "applied");
+  assert.equal(applyLocalComposerConfigPatch(patchedComposer, presets), patchedComposer);
+  assert.equal(
+    (patchedComposer.match(new RegExp(LOCAL_COMPOSER_CONFIG_MARKER, "g")) ?? []).length,
+    1,
+  );
+  assert.equal(
+    (patchedComposer.match(new RegExp(LOCAL_DRAFT_SELECTION_MARKER, "g")) ?? []).length,
+    1,
+  );
+  assert.match(patchedComposer, /gpt-5\.6-sol:medium/);
+  assert.match(
+    patchedComposer,
+    /sliderModelsConfig:serverConfig==null\?serverConfig:codexLinuxLocalDefaultPresetConfig/,
+  );
+  const runComposer = ({
+    available,
+    conversationId = null,
+    hookState = { refs: [] },
+    serverConfig = {},
+    manualSelection = false,
+  }) => {
+    const effects = [];
+    const selections = [];
+    let refIndex = 0;
+    const globals = {
+      React: {
+        useEffect(effect) {
+          effects.push(effect);
+        },
+        useRef(value) {
+          const index = refIndex++;
+          hookState.refs[index] ??= { current: value };
+          return hookState.refs[index];
+        },
+      },
+      available,
+      composer: { mode: { local: { model: { custom: null } } } },
+      conversationId,
+      draft: null,
+      manualSelection,
+      modelsForPicker() {},
+      picker() {},
+      render() {},
+      selection: { setDefaultModelAndReasoningEffort() {} },
+      serverConfig,
+      Wqr: ({ isDefault }) => isDefault === true,
+      zae: (selections, id) =>
+        selections.find((selection) => selection.id === id) ?? selections[0],
+      Power: (models, { sliderModelsConfig }) => {
+        if (sliderModelsConfig == null) return models;
+        const availableIds = new Set(models.map(({ id }) => id));
+        const configured = sliderModelsConfig.presets[0].flatMap(
+          ({ model, reasoning_effort: effort }) => {
+            const id = `${model}:${effort}`;
+            return availableIds.has(id) ? [{ id, model, reasoningEffort: effort }] : [];
+          },
+        );
+        return configured.length > 0 ? configured : models;
+      },
+      select: (model, effort, _callback, options) => {
+        selections.push({ effort, model, options });
+        return options ?? null;
+      },
+    };
+    const result = plain(
+      evaluate(
+        patchedComposer,
+        "LocalComposer(available,serverConfig,conversationId,manualSelection)",
+        globals,
+      ),
+    );
+    for (const effect of effects) effect();
+    return { result, selections: plain(selections) };
+  };
+  const unavailableDefault = runComposer({
+    available: [
+      { id: "gpt-5.6-sol:high", model: "gpt-5.6-sol", reasoningEffort: "high" },
+      {
+        id: "upstream:medium",
+        model: "upstream",
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      },
+    ],
+  });
+  assert.equal(unavailableDefault.result.fallback.id, "gpt-5.6-sol:high");
+  assert.equal(unavailableDefault.result.reset.id, "gpt-5.6-sol:high");
+  assert.deepEqual(unavailableDefault.selections, [
+    {
+      effort: "high",
+      model: "gpt-5.6-sol",
+      options: { persistAsDefault: false },
+    },
+  ]);
+
+  const configuredDefault = runComposer({
+    available: [
+      { id: "gpt-5.6-sol:high", model: "gpt-5.6-sol", reasoningEffort: "high" },
+      { id: "gpt-5.6-sol:medium", model: "gpt-5.6-sol", reasoningEffort: "medium" },
+    ],
+  });
+  assert.deepEqual(configuredDefault.selections[0], {
+    effort: "medium",
+    model: "gpt-5.6-sol",
+    options: { persistAsDefault: false },
+  });
+
+  const gatedOut = runComposer({
+    available: [
+      {
+        id: "upstream:medium",
+        model: "upstream",
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      },
+    ],
+    serverConfig: null,
+  });
+  assert.equal(gatedOut.result.fallback.id, "upstream:medium");
+  assert.equal(gatedOut.result.reset.id, "upstream:medium");
+  assert.deepEqual(gatedOut.selections, []);
+
+  const gatedManualSelection = runComposer({
+    available: [
+      { id: "gpt-5.6-sol:high", model: "gpt-5.6-sol", reasoningEffort: "high" },
+    ],
+    manualSelection: true,
+    serverConfig: null,
+  });
+  assert.deepEqual(gatedManualSelection.selections, [
+    { effort: "high", model: "gpt-5.6-sol" },
+  ]);
+
+  const completeFallback = runComposer({
+    available: [
+      {
+        id: "upstream:medium",
+        model: "upstream",
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      },
+    ],
+  });
+  assert.equal(completeFallback.result.fallback.id, "upstream:medium");
+  assert.equal(completeFallback.result.reset.id, "upstream:medium");
+  assert.deepEqual(completeFallback.selections, []);
+
+  const existingConversation = runComposer({
+    available: [
+      { id: "gpt-5.6-sol:medium", model: "gpt-5.6-sol", reasoningEffort: "medium" },
+    ],
+    conversationId: "existing",
+  });
+  assert.deepEqual(existingConversation.selections, []);
+
+  const lifecycleHooks = { refs: [] };
+  const lifecycleAvailable = [
+    { id: "gpt-5.6-sol:medium", model: "gpt-5.6-sol", reasoningEffort: "medium" },
+  ];
+  const firstDraft = runComposer({ available: lifecycleAvailable, hookState: lifecycleHooks });
+  const createdConversation = runComposer({
+    available: lifecycleAvailable,
+    conversationId: "created",
+    hookState: lifecycleHooks,
+  });
+  const nextDraft = runComposer({ available: lifecycleAvailable, hookState: lifecycleHooks });
+  assert.equal(firstDraft.selections.length, 1);
+  assert.equal(createdConversation.selections.length, 0);
+  assert.equal(nextDraft.selections.length, 1);
+
+  const manuallySelected = runComposer({
+    available: [
+      { id: "gpt-5.6-sol:medium", model: "gpt-5.6-sol", reasoningEffort: "medium" },
+      { id: "gpt-5.6-sol:high", model: "gpt-5.6-sol", reasoningEffort: "high" },
+    ],
+    manualSelection: true,
+  });
+  assert.equal(manuallySelected.result.selected.persistAsDefault, false);
+  assert.deepEqual(manuallySelected.selections, [
+    {
+      effort: "high",
+      model: "gpt-5.6-sol",
+      options: { persistAsDefault: false },
+    },
+  ]);
+});
+
+test("local composer patches fail closed on drift, duplicate, and partial states", () => {
+  const presets = context([{ model: "gpt-5.6-sol", effort: "medium", default: true }]);
+  for (const [apply, fixture, marker] of [
+    [applyLocalComposerResolverPatch, localComposerResolverFixture, LOCAL_COMPOSER_RESOLVER_MARKER],
+    [applyLocalComposerConfigPatch, localComposerFixture, LOCAL_COMPOSER_CONFIG_MARKER],
+  ]) {
+    for (const source of [
+      "function unrelated(){}",
+      fixture("One") + fixture("Two"),
+      `${marker};${fixture()}`,
+    ]) {
+      const { result, warnings } = withCapturedWarnings(() => apply(source, presets));
+      assert.equal(result, source);
+      assert.equal(warnings.length, 1);
+    }
+  }
+
+  const driftedComposer = localComposerFixture().replace(
+    /let reset=zae\([^;]+;/u,
+    "let reset=null;",
+  );
+  const decoy =
+    "function Decoy(y,z){let x=zae(y,z==null?void 0:`${z.model}:${z.defaultReasoningEffort}`);return x}";
+  const driftedWithDecoy = driftedComposer + decoy;
+  const { result, warnings } = withCapturedWarnings(() =>
+    applyLocalComposerConfigPatch(driftedWithDecoy, presets),
+  );
+  assert.equal(result, driftedWithDecoy);
+  assert.equal(warnings.length, 1);
+});
+
 test("empty manifest is a runtime passthrough used for compatibility auditing", () => {
   const passthrough = { feature: { manifest: { presets: [] }, settings: {} } };
   const patchedCatalog = applyCatalogPatch(catalogFixture(), passthrough);
@@ -407,7 +711,7 @@ test("feature descriptors load alone and alongside ui-tweaks", () => {
       featuresRoot: root,
       featuresConfigPath: configPath,
     });
-    assert.equal(alone.length, 2);
+    assert.equal(alone.length, 4);
     assert.ok(alone.every(({ featureId }) => featureId === "model-picker-default-presets"));
     writeConfig(["model-picker-default-presets", "ui-tweaks"]);
     const together = loadLinuxFeaturePatchDescriptors({
